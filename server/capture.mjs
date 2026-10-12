@@ -91,18 +91,26 @@ async function run(url, chromium, noSandbox) {
       "--disable-dev-shm-usage",
       "--password-store=basic",
       "--use-mock-keychain",
+      // No background calls to Google services, which can stall a headless run.
+      "--disable-background-networking",
+      "--disable-sync",
+      "--disable-component-update",
+      "--disable-default-apps",
       `--user-data-dir=${join(work, "profile")}`,
       ...(noSandbox ? ["--no-sandbox"] : []),
       "--no-pdf-header-footer",
-      // Give scripts and lazy images time to load before printing.
-      "--virtual-time-budget=15000",
       `--print-to-pdf=${out}`,
       url,
     ];
     // Some Chrome builds stay running after printing, so stop as soon as a
     // complete PDF has been written rather than waiting for Chrome to exit.
     // Its own process group, so Chrome and all its helper processes can be stopped together.
-    const child = spawn(chromium, args, { stdio: ["ignore", "ignore", "pipe"], detached: process.platform !== "win32" });
+    const child = spawn(chromium, args, {
+      stdio: ["ignore", "ignore", "pipe"],
+      detached: process.platform !== "win32",
+      // Without a desktop session bus Chrome retries D-Bus calls; tell it there is none.
+      env: { ...process.env, DBUS_SESSION_BUS_ADDRESS: "disabled:" },
+    });
     // Chrome's own messages, to explain a failure in the server log.
     let stderr = "";
     child.stderr.on("data", (d) => (stderr = (stderr + d).slice(-2000)));

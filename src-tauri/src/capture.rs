@@ -70,9 +70,11 @@ fn run(browser: &PathBuf, work: &PathBuf, url: &str) -> Result<Vec<u8>, String> 
             "--disable-dev-shm-usage",
             "--password-store=basic",
             "--use-mock-keychain",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--disable-component-update",
+            "--disable-default-apps",
             "--no-pdf-header-footer",
-            "--run-all-compositor-stages-before-draw",
-            "--virtual-time-budget=15000",
         ])
         .arg(format!(
             "--user-data-dir={}",
