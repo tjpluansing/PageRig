@@ -18,7 +18,7 @@ import {
 } from "../lib/objects";
 import { formWidgets, imageRegions, pageFrame, textRuns, type FormWidget, type ImageRegion, type TextRun } from "../lib/render";
 
-export type OverlayMode = "select" | "place" | "edit-text" | "edit-image";
+export type OverlayMode = "select" | "place" | "edit-text" | "edit-image" | "redact";
 
 export interface OverlayHandlers {
   /** "place": clicks on the page call onPlace. "edit-*": existing text or images can be picked. */
@@ -33,6 +33,8 @@ export interface OverlayHandlers {
   onFieldValue: (sourceId: string, name: string, value: FieldValue) => void;
   onEditRun: (pageId: string, run: TextRun) => void;
   onEditImage: (pageId: string, region: ImageRegion, action: "replace" | "remove") => void;
+  /** An area dragged out with the Redact tool, in unrotated page space. */
+  onRedactArea: (pageId: string, box: { x: number; y: number; w: number; h: number }) => void;
 }
 
 interface Props {
@@ -49,10 +51,22 @@ export function PageOverlay({ doc, page, scale, handlers }: Props) {
   const frame = pageFrame(page);
   const widgets = useWidgets(doc, page);
   const interactive = !!handlers;
+  // Area being dragged out with the Redact tool, in CSS pixels within the overlay.
+  const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+
+  const local = (e: PointerEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
 
   const onBackgroundPointerDown = (e: PointerEvent<HTMLDivElement>) => {
     if (!handlers || e.target !== e.currentTarget) return;
-    if (handlers.mode === "place") {
+    if (handlers.mode === "redact") {
+      e.preventDefault();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      const p = local(e);
+      setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+    } else if (handlers.mode === "place") {
       // Keep focus where it lands next (e.g. the new text box) instead of on the page.
       e.preventDefault();
       const rect = e.currentTarget.getBoundingClientRect();
@@ -63,11 +77,37 @@ export function PageOverlay({ doc, page, scale, handlers }: Props) {
     }
   };
 
+  const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    if (drag) setDrag({ ...drag, ...((p) => ({ x1: p.x, y1: p.y }))(local(e)) });
+  };
+  const onPointerUp = () => {
+    if (!drag || !handlers) return;
+    setDrag(null);
+    if (Math.abs(drag.x1 - drag.x0) < 4 || Math.abs(drag.y1 - drag.y0) < 4) return;
+    const a = fromDisplay(frame, drag.x0 / scale, drag.y0 / scale);
+    const b = fromDisplay(frame, drag.x1 / scale, drag.y1 / scale);
+    handlers.onRedactArea(page.id, { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) });
+  };
+
+  const crosshair = handlers?.mode === "place" || handlers?.mode === "redact";
   return (
     <div
-      className={`overlay${interactive ? " interactive" : ""}${handlers && handlers.mode !== "select" ? " placing" : ""}${handlers?.mode === "place" ? " crosshair" : ""}`}
+      className={`overlay${interactive ? " interactive" : ""}${handlers && handlers.mode !== "select" ? " placing" : ""}${crosshair ? " crosshair" : ""}`}
       onPointerDown={onBackgroundPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
     >
+      {drag && (
+        <div
+          className="redact-draft"
+          style={{
+            left: Math.min(drag.x0, drag.x1),
+            top: Math.min(drag.y0, drag.y1),
+            width: Math.abs(drag.x1 - drag.x0),
+            height: Math.abs(drag.y1 - drag.y0),
+          }}
+        />
+      )}
       {widgets.map((w) => (
         <Widget key={w.id} doc={doc} page={page} widget={w} frame={frame} scale={scale} handlers={handlers} />
       ))}
@@ -206,6 +246,8 @@ function ObjectBody({ obj, scale: s, editing, page, handlers }: { obj: PageObjec
       );
     case "rect":
       return <div className="obj-rect-body" style={{ background: obj.fill }} />;
+    case "redact":
+      return <div className="obj-redact-body" title="Marked for redaction" />;
     case "field":
       return (
         <div className="obj-field-body" style={{ fontSize: Math.max(6, Math.min(11, obj.h * 0.55) * s) }}>

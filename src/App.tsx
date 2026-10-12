@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { PDFDocument, EncryptedPDFError } from "pdf-lib";
 import {
   addSource,
   cropPages,
@@ -15,7 +14,8 @@ import {
 } from "./lib/document";
 import { exportGroups, exportPdf } from "./lib/export";
 import { pickPdfs, readBrowserFiles, savePdf, savePdfs, type PickedFile } from "./lib/platform";
-import { displaySize, inspectPdf, pageFrame, registerSource, searchDoc, sourceFieldNames, type SearchHit } from "./lib/render";
+import { displaySize, findText, inspectPdf, pageFrame, registerSource, searchDoc, sourceFieldNames, type SearchHit } from "./lib/render";
+import { ALL_PERMISSIONS, isRestricted, unlockPdf } from "./lib/security";
 import {
   addObject,
   makeObject,
@@ -29,6 +29,7 @@ import {
   type MarkObject,
   type PageObject,
   type RectObject,
+  type RedactObject,
   type TextObject,
   TEXT_PAD,
 } from "./lib/objects";
@@ -40,11 +41,12 @@ import { CropDialog, SplitDialog } from "./components/Dialogs";
 import { PageOverlay, sizeText, type OverlayHandlers } from "./components/PageOverlay";
 import { imageSize, readImageFile, SignatureDialog, type SignatureRole } from "./components/SignatureDialog";
 import { STAMPS, ToolBar, type Stamp, type Tool } from "./components/ToolBar";
+import { DEFAULT_SAVE_SETTINGS, isProtectedSave, ProtectDialog, type SaveSettings } from "./components/ProtectDialog";
 
 const PX_PER_PT = 96 / 72;
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4];
 
-type Dialog = null | "crop" | "split";
+type Dialog = null | "crop" | "split" | "protect";
 
 const SIG_KEYS: Record<SignatureRole, string> = { signature: "pagerig.signature", initials: "pagerig.initials" };
 
@@ -91,6 +93,7 @@ export default function App() {
   const [sigDialog, setSigDialog] = useState<SignatureRole | null>(null);
   const [pendingImage, setPendingImage] = useState<string | null>(null);
   const [takenNames, setTakenNames] = useState<Set<string>>(new Set());
+  const [saveSettings, setSaveSettings] = useState<SaveSettings>(DEFAULT_SAVE_SETTINGS);
 
   const viewerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -229,7 +232,7 @@ export default function App() {
   };
 
   const overlayHandlers: OverlayHandlers = {
-    mode: tool === "select" ? "select" : tool === "edit-text" || tool === "edit-image" ? tool : "place",
+    mode: tool === "select" ? "select" : tool === "edit-text" || tool === "edit-image" || tool === "redact" ? tool : "place",
     selectedId: picked?.objId ?? null,
     editingId: editing,
     onSelect: (pageId, objId) => setPicked(objId ? { pageId, objId } : null),
@@ -261,6 +264,10 @@ export default function App() {
       setTool("select");
       setPicked({ pageId, objId: text.id });
       setEditing(text.id);
+    },
+    onRedactArea: (pageId, box) => {
+      const obj = makeObject<RedactObject>({ kind: "redact", cx: box.x + box.w / 2, cy: box.y + box.h / 2, w: box.w, h: box.h, rot: 0 });
+      history.set((d) => addObject(d, pageId, obj));
     },
     onEditImage: async (pageId, region, action) => {
       const cover = makeObject<RectObject>({
@@ -343,15 +350,25 @@ export default function App() {
     const sources: Source[] = [];
     for (const file of files) {
       try {
-        const loaded = await openWithPassword(file);
-        if (!loaded) continue;
-        const source: Source = {
-          id: newId("s"),
-          name: file.name,
-          bytes: file.bytes,
-          pageCount: loaded.info.length,
-          encrypted: await isEncrypted(file.bytes),
-        };
+        const opened = await openWithPassword(file);
+        if (!opened) continue;
+        const { loaded, password } = opened;
+        const source: Source = { id: newId("s"), name: file.name, bytes: file.bytes, pageCount: loaded.info.length };
+        // pdf.js reports permissions only for encrypted files.
+        if ((await loaded.pdf.getPermissions()) !== null) {
+          // Decrypt a copy so pages can be edited and saved like any other file.
+          const unlocked = await unlockPdf(file.bytes, password).catch(() => null);
+          if (!unlocked) source.encrypted = true;
+          else {
+            source.bytes = unlocked.bytes;
+            if (password) source.openPassword = password;
+            if (!unlocked.owner && isRestricted(unlocked.permissions)) {
+              source.restricted = unlocked.permissions;
+              source.locked = file.bytes;
+              flash(`${file.name} restricts changes. You can view and edit it, but saving needs its permissions password.`);
+            }
+          }
+        }
         registerSource(source, loaded);
         sources.push(source);
       } catch (err) {
@@ -379,6 +396,9 @@ export default function App() {
           setHits(null);
           setQuery("");
           viewerRef.current?.scrollTo({ top: 0 });
+          // A file that needed a password to open keeps needing one when saved, unless changed under Protect.
+          const password = sources[0].openPassword;
+          setSaveSettings(password ? { ...DEFAULT_SAVE_SETTINGS, protection: { openPassword: password, ownerPassword: "", permissions: ALL_PERMISSIONS } } : DEFAULT_SAVE_SETTINGS);
         } else {
           const at = mode === "insert" && lastSelectedIndex >= 0 ? lastSelectedIndex + 1 : doc.pages.length;
           history.set((d) => {
@@ -431,8 +451,8 @@ export default function App() {
   const save = async () => {
     setBusy("Saving…");
     try {
-      ensureExportable(doc);
-      const ok = await savePdf(editedName(docName), await exportPdf(doc));
+      await ensureExportable(doc);
+      const ok = await savePdf(editedName(docName), await exportPdf(doc, doc.pages, saveSettings));
       if (ok) flash("Saved");
     } catch (err) {
       flash((err as Error).message, "error");
@@ -445,8 +465,8 @@ export default function App() {
     if (selectedPages.length === 0) return;
     setBusy("Extracting…");
     try {
-      ensureExportable(doc);
-      const bytes = await exportPdf(doc, selectedPages);
+      await ensureExportable(doc);
+      const bytes = await exportPdf(doc, selectedPages, saveSettings);
       const ok = await savePdf(stem(docName) + "-extract.pdf", bytes);
       if (ok) flash(`Extracted ${selectedPages.length} page${selectedPages.length === 1 ? "" : "s"}`);
     } catch (err) {
@@ -460,8 +480,8 @@ export default function App() {
     setDialog(null);
     setBusy("Splitting…");
     try {
-      ensureExportable(doc);
-      const files = await exportGroups(doc, groups);
+      await ensureExportable(doc);
+      const files = await exportGroups(doc, groups, saveSettings);
       const pad = String(files.length).length;
       const ok = await savePdfs(
         files.map((bytes, i) => ({ name: `${stem(docName)}-part${String(i + 1).padStart(pad, "0")}.pdf`, bytes })),
@@ -472,6 +492,24 @@ export default function App() {
     } finally {
       setBusy(null);
     }
+  };
+
+  const redactMatches = async () => {
+    if (!hits) return;
+    const marks: [string, RedactObject][] = [];
+    for (const hit of hits) {
+      const ref = doc.pages.find((p) => p.id === hit.pageId);
+      if (!ref) continue;
+      for (const b of await findText(doc, ref, query)) {
+        marks.push([ref.id, makeObject<RedactObject>({ kind: "redact", cx: b.x + b.w / 2, cy: b.y + b.h / 2, w: b.w, h: b.h, rot: 0 })]);
+      }
+    }
+    if (marks.length === 0) {
+      flash("Couldn't find where those matches are on the page. Use the Redact tool to mark them instead.", "error");
+      return;
+    }
+    history.set((d) => marks.reduce((acc, [pageId, obj]) => addObject(acc, pageId, obj), d));
+    flash(`Marked ${marks.length} match${marks.length === 1 ? "" : "es"} for redaction. They're removed for good when you save.`);
   };
 
   // ---- Selection & navigation -------------------------------------------
@@ -664,6 +702,14 @@ export default function App() {
         <button className="primary" disabled={!hasDoc} onClick={save} title="Save (Ctrl+S)">
           Save
         </button>
+        <button
+          disabled={!hasDoc}
+          className={isProtectedSave(saveSettings) ? "on" : ""}
+          onClick={() => setDialog("protect")}
+          title="Passwords, permissions and removing hidden information when saving"
+        >
+          {isProtectedSave(saveSettings) ? "Protected 🔒" : "Protect…"}
+        </button>
         <span className="sep" />
         <button disabled={!history.canUndo} onClick={history.undo} title="Undo (Ctrl+Z)" aria-label="Undo">
           ↶
@@ -804,6 +850,11 @@ export default function App() {
                   Close
                 </button>
               </div>
+              {!searching && hits.length > 0 && (
+                <button className="redact-all" onClick={redactMatches} title="Mark every match for redaction">
+                  Redact all matches
+                </button>
+              )}
               <ul>
                 {hits.map((h) => (
                   <li key={h.pageId}>
@@ -829,6 +880,17 @@ export default function App() {
             const ids = targetIds();
             history.set((d) => cropPages(d, ids, crop));
             setDialog(null);
+          }}
+        />
+      )}
+      {dialog === "protect" && (
+        <ProtectDialog
+          settings={saveSettings}
+          onClose={() => setDialog(null)}
+          onApply={(settings) => {
+            setSaveSettings(settings);
+            setDialog(null);
+            flash(isProtectedSave(settings) ? "Protection will be applied when you save" : "Protection turned off");
           }}
         />
       )}
@@ -864,7 +926,7 @@ async function openWithPassword(file: PickedFile) {
   let password: string | undefined;
   for (;;) {
     try {
-      return await inspectPdf(file.bytes, password);
+      return { loaded: await inspectPdf(file.bytes, password), password: password ?? "" };
     } catch (err) {
       if ((err as Error).name !== "PasswordException") throw err;
       const entered = window.prompt(
@@ -876,22 +938,26 @@ async function openWithPassword(file: PickedFile) {
   }
 }
 
-async function isEncrypted(bytes: Uint8Array): Promise<boolean> {
-  try {
-    await PDFDocument.load(bytes, { updateMetadata: false });
-    return false;
-  } catch (err) {
-    if (err instanceof EncryptedPDFError) return true;
-    throw err;
-  }
-}
-
-function ensureExportable(doc: DocState) {
-  const locked = Object.values(doc.sources).find((s) => s.encrypted);
-  if (locked) {
-    throw new Error(
-      `${locked.name} is encrypted. PageRig can view it, but saving encrypted files arrives with the security tools.`,
-    );
+/**
+ * Check every source can be saved: files whose owner restricted changes need
+ * the permissions password first, and a few encryption types can only be viewed.
+ */
+async function ensureExportable(doc: DocState) {
+  const unsupported = Object.values(doc.sources).find((s) => s.encrypted);
+  if (unsupported) throw new Error(`${unsupported.name} uses a kind of encryption PageRig can view but not save.`);
+  for (const source of Object.values(doc.sources)) {
+    if (!source.restricted || !source.locked) continue;
+    let ask = `${source.name} is protected against changes. Enter its permissions password to save:`;
+    for (;;) {
+      const pw = window.prompt(ask);
+      if (pw === null) throw new Error(`Saving needs the permissions password for ${source.name}.`);
+      const unlocked = await unlockPdf(source.locked, pw);
+      if (unlocked?.owner) break;
+      ask = "That isn't the permissions password. Try again:";
+    }
+    // Sources are shared by every undo step, so unlocking once covers them all.
+    source.restricted = undefined;
+    source.locked = undefined;
   }
 }
 

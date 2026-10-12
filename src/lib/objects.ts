@@ -71,7 +71,15 @@ export interface RectObject extends Base {
   fill: string;
 }
 
-export type PageObject = TextObject | ImageObject | MarkObject | FieldObject | RectObject;
+/**
+ * An area marked for redaction. Shown as an outline while editing; when saved,
+ * everything under it is permanently removed and it becomes a solid black box.
+ */
+export interface RedactObject extends Base {
+  kind: "redact";
+}
+
+export type PageObject = TextObject | ImageObject | MarkObject | FieldObject | RectObject | RedactObject;
 
 /** A line of text found by OCR on a scanned page, in unrotated page space (points, top-left origin). */
 export interface OcrLine {

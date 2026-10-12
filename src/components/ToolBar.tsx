@@ -16,7 +16,8 @@ export type Tool =
   | "image"
   | "field-text"
   | "field-checkbox"
-  | "field-dropdown";
+  | "field-dropdown"
+  | "redact";
 
 export interface Stamp {
   text: string;
@@ -66,7 +67,18 @@ const FIELD_TOOLS: { tool: Tool; label: string }[] = [
 ];
 
 /** Fill & sign and form-building tools, plus settings for the selected object. */
-export function ToolBar({ tool, onTool, stamp, onStamp, hasSignature, onRedoSignature, selected, onChange, onDelete, onOcr }: Props) {
+export function ToolBar({
+  tool,
+  onTool,
+  stamp,
+  onStamp,
+  hasSignature,
+  onRedoSignature,
+  selected,
+  onChange,
+  onDelete,
+  onOcr,
+}: Props) {
   const [stampMenu, setStampMenu] = useState(false);
 
   return (
@@ -87,6 +99,9 @@ export function ToolBar({ tool, onTool, stamp, onStamp, hasSignature, onRedoSign
           OCR
         </button>
       )}
+      <button className={tool === "redact" ? "active" : ""} title="Black out text or images for good" onClick={() => onTool("redact")}>
+        Redact
+      </button>
       <span className="sep" />
       <span className="group-label">Fill &amp; sign</span>
       {TOOLS.map((t) => (
@@ -160,6 +175,7 @@ function Hint({ tool, stamp, hasSignature, onRedoSignature }: Pick<Props, "tool"
       </span>
     );
   }
+  if (tool === "redact") return <span className="hint-inline">Drag over anything to redact it. It's removed for good when you save.</span>;
   if (tool === "stamp") return <span className="hint-inline">Click to place “{stamp.text}”.</span>;
   return <span className="hint-inline">Click on the page to place it. Esc to stop.</span>;
 }

@@ -8,19 +8,20 @@ A PDF viewer and editor that runs in the browser and as a desktop app (Windows, 
 - **Organize pages:** drag to reorder (including several at once), rotate, crop, delete, insert blank pages, insert pages from another PDF, and merge whole files.
 - **Split and extract:** split every N pages or by custom ranges such as `1-3, 4, 5-`, or save just the selected pages as a new PDF.
 - **Fill & sign:** fill in a PDF's existing form fields; add text, today's date, check marks, crosses and dots; draw, type or upload a signature and initials (remembered on this device); place stamps like APPROVED or DRAFT; add pictures. Everything can be moved and resized.
-- **Edit existing content:** click any line of text to retype it (in the closest standard font), and replace or remove images. The original stays underneath, covered; removing it for good comes with redaction.
+- **Edit existing content:** click any line of text to retype it (in the closest standard font), and replace or remove images. The original stays underneath, covered, unless you choose to remove covered content when saving.
 - **OCR:** recognise text on scanned pages so it can be searched, selected and edited. The saved PDF gets an invisible text layer. The engine and English data are built in, so it works offline.
 - **Build forms:** add fillable text boxes, checkboxes and dropdowns to any PDF. Forms stay fillable after merging, splitting and reordering.
+- **Redact:** drag over anything, or redact every match of a search. When you save, everything under a redaction is removed for good: the page is saved as an image with its remaining text kept searchable.
+- **Protect:** require a password to open, restrict printing, copying and editing (AES-256), and strip metadata, comments, scripts and attachments.
+- **Password-protected files** open for editing in every standard encryption type. Files whose owner restricted changes need the permissions password to save.
 - **Undo and redo** for every edit.
 - Files never leave your machine. Pages are copied rather than re-rendered, so text stays selectable and file size stays small.
-
-Encrypted PDFs open for viewing; saving them comes with the security tools.
 
 ## Roadmap
 
 1. Foundation, viewer and page management *(done)*
 2. Fill and sign, forms, editing existing text and images, OCR *(done)*
-3. Encryption and permissions, redaction and sanitizing, conversion to and from Office and images *(next)*
+3. Encryption and permissions, redaction and sanitizing *(done)*; conversion to and from Office and images *(next)*
 4. Signature requests, tracking, templates and bulk send
 
 ## Development
@@ -46,6 +47,8 @@ npm run tauri build  # desktop installers in src-tauri/target/release/bundle/
 | `src/lib/export.ts` | Builds real PDFs from that list with pdf-lib, drawing placed objects and filling forms. |
 | `src/lib/render.ts` | Rendering, text search and finding editable text and images with pdf.js. |
 | `src/lib/ocr.ts` | Text recognition for scanned pages with Tesseract. |
+| `src/lib/security.ts`, `crypto.ts` | Encrypting and decrypting PDFs (RC4, AES-128, AES-256). |
+| `src/lib/redact.ts`, `sanitize.ts` | Redaction and removing hidden information when saving. |
 | `src/lib/platform.ts` | Opening and saving files in the browser vs. the desktop app. |
 | `src/components/` | Thumbnails, page canvas, the on-page overlay, the Fill & sign toolbar and dialogs. |
 | `src-tauri/` | The Tauri desktop shell. |
