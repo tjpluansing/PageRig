@@ -13,7 +13,10 @@ import {
   type Source,
 } from "./lib/document";
 import { exportGroups, exportPdf } from "./lib/export";
-import { pickPdfs, readBrowserFiles, savePdf, savePdfs, type PickedFile } from "./lib/platform";
+import { pickFiles, readBrowserFiles, saveFile, saveFiles, type PickedFile } from "./lib/platform";
+import { fileKind, imageToPdf, pdfToImages } from "./lib/convert";
+import { convertOffice } from "./lib/office";
+import { ExportDialog, type ExportChoice } from "./components/ExportDialog";
 import { displaySize, findText, inspectPdf, pageFrame, registerSource, searchDoc, sourceFieldNames, type SearchHit } from "./lib/render";
 import { ALL_PERMISSIONS, isRestricted, unlockPdf } from "./lib/security";
 import {
@@ -46,7 +49,7 @@ import { DEFAULT_SAVE_SETTINGS, isProtectedSave, ProtectDialog, type SaveSetting
 const PX_PER_PT = 96 / 72;
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4];
 
-type Dialog = null | "crop" | "split" | "protect";
+type Dialog = null | "crop" | "split" | "protect" | "export";
 
 const SIG_KEYS: Record<SignatureRole, string> = { signature: "pagerig.signature", initials: "pagerig.initials" };
 
@@ -348,8 +351,9 @@ export default function App() {
 
   const loadFiles = useCallback(async (files: PickedFile[]): Promise<Source[]> => {
     const sources: Source[] = [];
-    for (const file of files) {
+    for (const original of files) {
       try {
+        const file = await asPdf(original);
         const opened = await openWithPassword(file);
         if (!opened) continue;
         const { loaded, password } = opened;
@@ -372,7 +376,7 @@ export default function App() {
         registerSource(source, loaded);
         sources.push(source);
       } catch (err) {
-        flash(`Couldn't open ${file.name}: ${(err as Error).message}`, "error");
+        flash(`Couldn't open ${original.name}: ${(err as Error).message}`, "error");
       }
     }
     return sources;
@@ -452,7 +456,7 @@ export default function App() {
     setBusy("Saving…");
     try {
       await ensureExportable(doc);
-      const ok = await savePdf(editedName(docName), await exportPdf(doc, doc.pages, saveSettings));
+      const ok = await saveFile(editedName(docName), await exportPdf(doc, doc.pages, saveSettings));
       if (ok) flash("Saved");
     } catch (err) {
       flash((err as Error).message, "error");
@@ -467,7 +471,7 @@ export default function App() {
     try {
       await ensureExportable(doc);
       const bytes = await exportPdf(doc, selectedPages, saveSettings);
-      const ok = await savePdf(stem(docName) + "-extract.pdf", bytes);
+      const ok = await saveFile(stem(docName) + "-extract.pdf", bytes);
       if (ok) flash(`Extracted ${selectedPages.length} page${selectedPages.length === 1 ? "" : "s"}`);
     } catch (err) {
       flash((err as Error).message, "error");
@@ -483,10 +487,39 @@ export default function App() {
       await ensureExportable(doc);
       const files = await exportGroups(doc, groups, saveSettings);
       const pad = String(files.length).length;
-      const ok = await savePdfs(
+      const ok = await saveFiles(
         files.map((bytes, i) => ({ name: `${stem(docName)}-part${String(i + 1).padStart(pad, "0")}.pdf`, bytes })),
+        "Choose a folder for the split files",
       );
       if (ok) flash(`Split into ${files.length} files`);
+    } catch (err) {
+      flash((err as Error).message, "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const exportAs = async (choice: ExportChoice) => {
+    setDialog(null);
+    const pages = choice.selectedOnly ? selectedPages : doc.pages;
+    if (pages.length === 0) return;
+    setBusy("Exporting…");
+    try {
+      await ensureExportable(doc);
+      // These formats can't carry a password, but redactions and clean-up still apply.
+      const pdf = await exportPdf(doc, pages, { sanitize: saveSettings.sanitize });
+      const name = stem(docName);
+      let ok: boolean;
+      if (choice.format === "png" || choice.format === "jpeg") {
+        const images = await pdfToImages(pdf, name, choice.format, choice.dpi);
+        ok = images.length === 1 ? await saveFile(images[0].name, images[0].bytes) : await saveFiles(images, "Choose a folder for the page images", `${name}-images.zip`);
+        if (ok) flash(`Exported ${images.length} image${images.length === 1 ? "" : "s"}`);
+      } else {
+        setBusy(choice.format === "docx" ? "Converting to Word…" : "Converting to PowerPoint…");
+        const out = await convertOffice(pdf, `${name}.pdf`, choice.format);
+        ok = await saveFile(`${name}.${choice.format}`, out);
+        if (ok) flash("Exported");
+      }
     } catch (err) {
       flash((err as Error).message, "error");
     } finally {
@@ -616,7 +649,7 @@ export default function App() {
       const inField = (e.target as HTMLElement)?.matches?.("input, textarea, select");
       if (mod && e.key.toLowerCase() === "o") {
         e.preventDefault();
-        pickPdfs().then((f) => openFiles(f, "open"));
+        pickFiles().then((f) => openFiles(f, "open"));
       } else if (mod && e.key.toLowerCase() === "s" && hasDoc) {
         e.preventDefault();
         save();
@@ -666,7 +699,7 @@ export default function App() {
     e.preventDefault();
     setDragOver(false);
     const files = await readBrowserFiles(e.dataTransfer.files);
-    if (files.length === 0) flash("Only PDF files can be opened", "error");
+    if (files.length === 0) flash("PageRig opens PDFs, images and Office documents", "error");
     else openFiles(files, hasDoc ? "append" : "open");
   };
 
@@ -693,10 +726,10 @@ export default function App() {
           <img src="/favicon.svg" alt="" width={20} height={20} />
           PageRig
         </div>
-        <button onClick={() => pickPdfs().then((f) => openFiles(f, "open"))} title="Open (Ctrl+O)">
+        <button onClick={() => pickFiles().then((f) => openFiles(f, "open"))} title="Open (Ctrl+O)">
           Open
         </button>
-        <button disabled={!hasDoc} onClick={() => pickPdfs().then((f) => openFiles(f, "append"))} title="Merge other PDFs onto the end">
+        <button disabled={!hasDoc} onClick={() => pickFiles().then((f) => openFiles(f, "append"))} title="Merge other PDFs onto the end">
           Merge files
         </button>
         <button className="primary" disabled={!hasDoc} onClick={save} title="Save (Ctrl+S)">
@@ -709,6 +742,9 @@ export default function App() {
           title="Passwords, permissions and removing hidden information when saving"
         >
           {isProtectedSave(saveSettings) ? "Protected 🔒" : "Protect…"}
+        </button>
+        <button disabled={!hasDoc} onClick={() => setDialog("export")} title="Save as images, Word or PowerPoint">
+          Export…
         </button>
         <span className="sep" />
         <button disabled={!history.canUndo} onClick={history.undo} title="Undo (Ctrl+Z)" aria-label="Undo">
@@ -776,9 +812,10 @@ export default function App() {
         <main className="empty">
           <div className="drop-card">
             <h1>Open a PDF to get started</h1>
-            <p>Drop PDF files anywhere in this window, or choose them from your computer. Dropping several merges them.</p>
-            <button className="primary big" onClick={() => pickPdfs().then((f) => openFiles(f, "open"))}>
-              Choose PDF files
+            <p>Drop files anywhere in this window, or choose them from your computer. Dropping several merges them.</p>
+            <p className="muted small">Images and Word, Excel and PowerPoint files are turned into PDFs as they open.</p>
+            <button className="primary big" onClick={() => pickFiles().then((f) => openFiles(f, "open"))}>
+              Choose files
             </button>
           </div>
         </main>
@@ -799,7 +836,7 @@ export default function App() {
               <button disabled={!target} onClick={() => setDialog("crop")}>Crop</button>
               <button disabled={!target} onClick={remove} title="Delete (Del)">Delete</button>
               <button onClick={addBlank} title="Insert a blank page after the selection">+ Blank</button>
-              <button onClick={() => pickPdfs().then((f) => openFiles(f, "insert"))} title="Insert pages from another PDF after the selection">
+              <button onClick={() => pickFiles().then((f) => openFiles(f, "insert"))} title="Insert pages from another PDF after the selection">
                 + From file
               </button>
               <button disabled={!sel} onClick={extract} title="Save the selected pages as a new PDF">Extract</button>
@@ -894,6 +931,7 @@ export default function App() {
           }}
         />
       )}
+      {dialog === "export" && <ExportDialog selectedCount={selected.size} onExport={exportAs} onClose={() => setDialog(null)} />}
       {dialog === "split" && (
         <SplitDialog pageCount={doc.pages.length} onSplit={split} onClose={() => setDialog(null)} />
       )}
@@ -917,9 +955,19 @@ export default function App() {
           {message.text}
         </div>
       )}
-      {dragOver && <div className="drop-overlay">Drop PDFs to {hasDoc ? "merge them in" : "open"}</div>}
+      {dragOver && <div className="drop-overlay">Drop files to {hasDoc ? "merge them in" : "open"}</div>}
     </div>
   );
+}
+
+/** Images and Office documents become PDFs as they're opened. */
+async function asPdf(file: PickedFile): Promise<PickedFile> {
+  const kind = fileKind(file.name, file.bytes);
+  if (kind === "pdf") return file;
+  const name = file.name.replace(/\.[^.\\/]*$/, "") + ".pdf";
+  if (kind === "image") return { name, bytes: await imageToPdf(file.bytes) };
+  if (kind === "office") return { name, bytes: await convertOffice(file.bytes, file.name, "pdf") };
+  throw new Error("PageRig can't open this kind of file.");
 }
 
 async function openWithPassword(file: PickedFile) {
