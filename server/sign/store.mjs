@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS envelopes (
   void_reason TEXT,
   original_sha TEXT NOT NULL,
   final_sha TEXT,
-  template_id TEXT
+  template_id TEXT,
+  remind_days INTEGER              -- email pending signers again after this many days; NULL is off
 );
 CREATE TABLE IF NOT EXISTS signers (
   envelope_id TEXT NOT NULL REFERENCES envelopes(id) ON DELETE CASCADE,
@@ -43,6 +44,8 @@ CREATE TABLE IF NOT EXISTS signers (
   signed_at TEXT,
   declined_at TEXT,
   decline_reason TEXT,
+  reminded_at TEXT,
+  reminders INTEGER NOT NULL DEFAULT 0,
   ip TEXT,
   user_agent TEXT,
   PRIMARY KEY (envelope_id, idx)
@@ -88,6 +91,18 @@ export class Store {
     this.db = new DatabaseSync(join(dir, "pagerig.db"));
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     this.db.exec(SCHEMA);
+    this.migrate();
+  }
+
+  /** Add columns that databases made by earlier versions lack. */
+  migrate() {
+    const add = (table, column, type) => {
+      const has = this.db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+      if (!has) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    };
+    add("envelopes", "remind_days", "INTEGER");
+    add("signers", "reminded_at", "TEXT");
+    add("signers", "reminders", "INTEGER NOT NULL DEFAULT 0");
   }
 
   close() {
@@ -114,7 +129,7 @@ export class Store {
   // ---- Envelopes -------------------------------------------------------------
 
   /** Store a new envelope; returns it with each signer's one-time token. */
-  async createEnvelope({ title, subject, message, senderName, senderEmail, ordered, expiresAt, signers, fields, pdf, templateId }) {
+  async createEnvelope({ title, subject, message, senderName, senderEmail, ordered, expiresAt, remindDays, signers, fields, pdf, templateId }) {
     const id = randomUUID();
     const at = this.now();
     await this.writeFile("original", id, pdf);
@@ -122,10 +137,10 @@ export class Store {
     this.tx(() => {
       this.db
         .prepare(
-          `INSERT INTO envelopes (id, title, subject, message, sender_name, sender_email, ordered, status, created_at, expires_at, original_sha, template_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?, ?)`,
+          `INSERT INTO envelopes (id, title, subject, message, sender_name, sender_email, ordered, status, created_at, expires_at, original_sha, template_id, remind_days)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?, ?, ?, ?)`,
         )
-        .run(id, title, subject, message, senderName, senderEmail, ordered ? 1 : 0, at, expiresAt ?? null, sha256(pdf), templateId ?? null);
+        .run(id, title, subject, message, senderName, senderEmail, ordered ? 1 : 0, at, expiresAt ?? null, sha256(pdf), templateId ?? null, remindDays ?? null);
       const addSigner = this.db.prepare(`INSERT INTO signers (envelope_id, idx, name, email, token_hash, status) VALUES (?, ?, ?, ?, ?, 'waiting')`);
       signers.forEach((s, i) => addSigner.run(id, i, s.name, s.email, sha256(tokens[i])));
       const addField = this.db.prepare(
@@ -193,6 +208,11 @@ export class Store {
   async deleteEnvelope(id) {
     this.db.prepare(`DELETE FROM envelopes WHERE id = ?`).run(id);
     await Promise.all(["original", "final"].map((k) => rm(this.file(k, id), { force: true })));
+  }
+
+  /** Requests still waiting for signatures, for the reminder and expiry sweep. */
+  openEnvelopes() {
+    return this.db.prepare(`SELECT * FROM envelopes WHERE status = 'sent'`).all();
   }
 
   envelopeByFinalSha(hash) {
