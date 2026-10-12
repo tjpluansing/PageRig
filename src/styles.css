@@ -107,6 +107,7 @@ input {
   border-bottom: 1px solid var(--border);
 }
 .page-actions button { padding: 4px 6px; font-size: 13px; }
+.page-actions button.wide { grid-column: 1 / -1; }
 .selection-label {
   grid-column: 1 / -1;
   color: var(--muted);
@@ -544,4 +545,23 @@ button.sign-field { cursor: pointer; }
 @media (max-width: 640px) {
   .form-grid { grid-template-columns: 1fr; }
   .sign-footer .consent { max-width: none; }
+}
+
+.sig-banner {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto 16px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.sig-banner.ok { background: #e8f5ec; color: #14532d; border: 1px solid #b7dfc3; }
+.sig-banner.bad { background: #fdecec; color: #7f1d1d; border: 1px solid #f3c0c0; }
+@media (prefers-color-scheme: dark) {
+  .sig-banner.ok { background: #13301f; color: #bbf7d0; border-color: #1f5133; }
+  .sig-banner.bad { background: #3a1616; color: #fecaca; border-color: #6b2525; }
 }

@@ -6,6 +6,7 @@
 //   GET    /api/envelopes/:id             one request, with its history
 //   GET    /api/envelopes/:id/pdf         the signed document (or the original until complete)
 //   POST   /api/envelopes/:id/remind      email a fresh link to everyone yet to sign
+//                                        (also sent automatically every remindDays, if set)
 //   POST   /api/envelopes/:id/void        cancel a request
 //   DELETE /api/envelopes/:id             delete a request and its files
 //   POST   /api/templates                 save a document and its fields as a template
@@ -26,6 +27,7 @@ import { timingSafeEqual } from "node:crypto";
 import { PDFDocument } from "pdf-lib";
 import { finalizeDocument, dataUrlBytes } from "./finalize.mjs";
 import { completedEmail, declinedEmail, reminderEmail, requestEmail } from "./mail.mjs";
+import { signPdf } from "./pades.mjs";
 import { sha256 } from "./store.mjs";
 
 export const FIELD_TYPES = ["signature", "initials", "date", "name", "text", "checkbox"];
@@ -33,6 +35,8 @@ const EMAIL = /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/;
 const MAX_SIGNERS = 20;
 const MAX_FIELDS = 500;
 const MAX_BULK = 500;
+// Automatic reminders stop after this many per signer, so a forgotten request doesn't email forever.
+export const MAX_AUTO_REMINDERS = 5;
 
 export class HttpError extends Error {
   constructor(status, message) {
@@ -49,8 +53,11 @@ export class SignService {
    * @param {string} o.apiKey      key the app must present to send requests; empty disables sending
    * @param {string} o.appUrl      where the PageRig web app lives, for signing links
    * @param {boolean} [o.trustProxy] read the client address from X-Forwarded-For
+   * @param {import("./pades.mjs").SigningIdentity | null} [o.seal] certificate to digitally seal completed documents with
    */
-  constructor({ store, mailer, apiKey, appUrl, trustProxy = false, log = console.error }) {
+  constructor({ store, mailer, apiKey, appUrl, trustProxy = false, log = console.error, seal = null, config = {} }) {
+    this.seal = seal;
+    this.config = config;
     this.store = store;
     this.mailer = mailer;
     this.apiKey = apiKey ?? "";
@@ -81,7 +88,7 @@ export class SignService {
     };
     const [a, b, c] = parts;
 
-    if (a === "config" && m === "GET") return send(res, 200, { signing: this.enabled });
+    if (a === "config" && m === "GET") return send(res, 200, { signing: this.enabled, ...this.config });
     if (a === "verify" && m === "POST") return send(res, 200, this.verify(await readBody()));
 
     if (a === "sign" && b) {
@@ -138,8 +145,8 @@ export class SignService {
   }
 
   /** Store an envelope and email whoever signs first. */
-  async dispatch({ title, subject, message, senderName, senderEmail, ordered, expiresAt, signers, fields, pdf, templateId }) {
-    const { id, tokens } = await this.store.createEnvelope({ title, subject, message, senderName, senderEmail, ordered, expiresAt, signers, fields, pdf, templateId });
+  async dispatch({ title, subject, message, senderName, senderEmail, ordered, expiresAt, remindDays, signers, fields, pdf, templateId }) {
+    const { id, tokens } = await this.store.createEnvelope({ title, subject, message, senderName, senderEmail, ordered, expiresAt, remindDays, signers, fields, pdf, templateId });
     const env = this.store.envelope(id);
     const first = ordered ? [0] : signers.map((_, i) => i);
     for (const i of first) await this.notify(env, i, tokens[i]);
@@ -150,7 +157,8 @@ export class SignService {
     const signer = this.store.signers(env.id)[idx];
     const at = this.store.now();
     if (!reminder) this.store.setSigner(env.id, idx, { status: "sent", sent_at: at });
-    this.store.event(env.id, reminder ? "reminded" : "sent", { signer: idx });
+    else this.store.setSigner(env.id, idx, { reminded_at: at, reminders: signer.reminders + 1 });
+    this.store.event(env.id, reminder ? "reminded" : "sent", { signer: idx, detail: reminder === "auto" ? "automatic" : null });
     const mail = (reminder ? reminderEmail : requestEmail)(env, signer, this.link(token));
     await this.mailer.send(mail).catch((err) => this.log(`Couldn't email ${signer.email}:`, err.message));
   }
@@ -167,6 +175,7 @@ export class SignService {
       createdAt: env.created_at,
       completedAt: env.completed_at,
       expiresAt: env.expires_at,
+      remindDays: env.remind_days,
       ordered: !!env.ordered,
       signers: this.store.signers(env.id).map((s) => ({
         name: s.name,
@@ -203,6 +212,33 @@ export class SignService {
     const pending = this.store.signers(id).filter((s) => s.status === "sent" || s.status === "viewed");
     for (const s of pending) await this.notify(env, s.idx, this.store.rotateToken(id, s.idx), true);
     return { reminded: pending.length };
+  }
+
+  /**
+   * Expire overdue requests and send automatic reminders to signers who were
+   * last emailed at least remind_days ago. Run periodically by the server.
+   */
+  async sweep(now = Date.now()) {
+    let reminded = 0;
+    let expired = 0;
+    for (const open of this.store.openEnvelopes()) {
+      const env = this.refresh(open);
+      if (env.status !== "sent") {
+        expired++;
+        continue;
+      }
+      if (!env.remind_days) continue;
+      const due = now - env.remind_days * 86_400_000;
+      for (const s of this.store.signers(env.id)) {
+        if (s.status !== "sent" && s.status !== "viewed") continue;
+        if (s.reminders >= MAX_AUTO_REMINDERS) continue;
+        const last = Date.parse(s.reminded_at ?? s.sent_at ?? env.created_at);
+        if (last > due) continue;
+        await this.notify(env, s.idx, this.store.rotateToken(env.id, s.idx), "auto");
+        reminded++;
+      }
+    }
+    return { reminded, expired };
   }
 
   void(id, body) {
@@ -341,7 +377,9 @@ export class SignService {
     const env = this.store.envelope(id);
     const signers = this.store.signers(id);
     const original = await this.store.readFile("original", id);
-    const final = await finalizeDocument(original, { envelope: env, signers, fields: this.store.fields(id), events: this.store.events(id) });
+    let final = await finalizeDocument(original, { envelope: env, signers, fields: this.store.fields(id), events: this.store.events(id) });
+    // A digital seal makes PDF readers show the document as unchanged since completion.
+    if (this.seal) final = await signPdf(final, this.seal, { reason: `Signed by ${signers.map((s) => s.name).join(", ")} with PageRig` });
     await this.store.writeFile("final", id, final);
     this.store.setEnvelope(id, { final_sha: sha256(final) });
     const recipients = [...signers.map((s) => s.email), env.sender_email].filter((e, i, all) => e && all.indexOf(e) === i);
@@ -427,6 +465,8 @@ function checkMeta(body) {
   const title = required(body.title, 200, "Give the request a title.");
   const days = body.expiresDays === undefined || body.expiresDays === null || body.expiresDays === "" ? null : Number(body.expiresDays);
   if (days !== null && !(Number.isInteger(days) && days >= 1 && days <= 365)) throw new HttpError(400, "Expiry must be between 1 and 365 days.");
+  const remind = body.remindDays === undefined || body.remindDays === null || body.remindDays === "" ? null : Number(body.remindDays);
+  if (remind !== null && !(Number.isInteger(remind) && remind >= 1 && remind <= 30)) throw new HttpError(400, "Reminders must be every 1 to 30 days.");
   const senderEmail = text(body.senderEmail, 200);
   if (senderEmail && !EMAIL.test(senderEmail)) throw new HttpError(400, "Your email address doesn't look right.");
   return {
@@ -437,6 +477,7 @@ function checkMeta(body) {
     senderEmail,
     ordered: body.ordered === true,
     expiresAt: days ? new Date(Date.now() + days * 86_400_000).toISOString() : null,
+    remindDays: remind,
   };
 }
 

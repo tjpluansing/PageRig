@@ -17,8 +17,19 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - run: npm ci && npm test
+      # pdfsig, to check digitally signed PDFs with a second implementation.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
+      - name: Server tests
         working-directory: server
+        shell: bash
+        # Failing tests are also listed as annotations, so they show on the PR.
+        run: |
+          npm ci
+          set +e
+          npm test 2>&1 | tee test.log
+          status=${PIPESTATUS[0]}
+          [ $status -ne 0 ] && grep -iE "not ok|error|actual|expected|chromium" test.log | head -40 | sed 's/^ */::error::/'
+          exit $status
       - run: npm run build
 
   desktop:

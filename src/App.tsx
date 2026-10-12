@@ -9,14 +9,20 @@ import {
   newId,
   rotatePages,
   setOcr,
+  untouchedSource,
   type DocState,
   type Source,
 } from "./lib/document";
+import { checkSignatures, signPdf, type SignatureCheck } from "../server/sign/pades.mjs";
+import { CertSignDialog, SignatureBanner, SignaturesDialog, type CertSignChoice } from "./components/CertSignDialog";
 import { exportGroups, exportPdf } from "./lib/export";
 import { pickFiles, readBrowserFiles, saveFile, saveFiles, type PickedFile } from "./lib/platform";
 import { fileKind, imageToPdf, pdfToImages } from "./lib/convert";
 import { convertOffice } from "./lib/office";
 import { ExportDialog, type ExportChoice } from "./components/ExportDialog";
+import { WebPageDialog } from "./components/WebPageDialog";
+import { captureWebPage } from "./lib/capture";
+import { pdfToSheets, xlsx } from "./lib/sheet";
 import { displaySize, findText, inspectPdf, pageFrame, registerSource, searchDoc, sourceFieldNames, type SearchHit } from "./lib/render";
 import { ALL_PERMISSIONS, isRestricted, unlockPdf } from "./lib/security";
 import {
@@ -54,7 +60,7 @@ import { DEFAULT_SAVE_SETTINGS, isProtectedSave, ProtectDialog, type SaveSetting
 const PX_PER_PT = 96 / 72;
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4];
 
-type Dialog = null | "crop" | "split" | "protect" | "export" | "send" | "requests" | "server";
+type Dialog = null | "crop" | "split" | "protect" | "export" | "send" | "requests" | "server" | "web" | "certify" | "signatures";
 
 const SIG_KEYS: Record<SignatureRole, string> = { signature: "pagerig.signature", initials: "pagerig.initials" };
 
@@ -88,6 +94,9 @@ export default function App() {
   const [searching, setSearching] = useState(false);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  /** Digital signatures in the file as opened. */
+  const [digitalSigs, setDigitalSigs] = useState<SignatureCheck[]>([]);
+  const sigCheck = useRef(0);
   const [message, setMessage] = useState<{ kind: "error" | "info"; text: string } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [tool, setTool] = useState<Tool>("select");
@@ -421,6 +430,13 @@ export default function App() {
           setHits(null);
           setQuery("");
           viewerRef.current?.scrollTo({ top: 0 });
+          setDigitalSigs([]);
+          const check = ++sigCheck.current;
+          if (sources.length === 1 && !sources[0].encrypted) {
+            checkSignatures(sources[0].bytes)
+              .then((sigs) => sigCheck.current === check && setDigitalSigs(sigs))
+              .catch(() => {});
+          }
           // A file that needed a password to open keeps needing one when saved, unless changed under Protect.
           const password = sources[0].openPassword;
           setSaveSettings(password ? { ...DEFAULT_SAVE_SETTINGS, protection: { openPassword: password, ownerPassword: "", permissions: ALL_PERMISSIONS } } : DEFAULT_SAVE_SETTINGS);
@@ -486,6 +502,29 @@ export default function App() {
     }
   };
 
+  /** Sign with a certificate and save. An unchanged file is signed as it is, keeping any earlier signatures. */
+  const signWithCertificate = async ({ signer, reason, location, visible }: CertSignChoice) => {
+    setDialog(null);
+    setBusy("Signing…");
+    try {
+      const same = untouchedSource(doc);
+      const cleanUp = Object.values(saveSettings.sanitize).some(Boolean);
+      let pdf: Uint8Array;
+      if (same && !cleanUp && !same.restricted && !same.openPassword) pdf = same.bytes;
+      else {
+        await ensureExportable(doc);
+        pdf = await exportPdf(doc, doc.pages, { sanitize: saveSettings.sanitize });
+      }
+      const signed = await signPdf(pdf, signer, { reason, location, visible: visible ? { page: -1 } : null });
+      const ok = await saveFile(`${stem(docName)} (signed).pdf`, signed);
+      if (ok) flash(`Signed as ${signer.name} and saved`);
+    } catch (err) {
+      flash((err as Error).message, "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const extract = async () => {
     if (selectedPages.length === 0) return;
     setBusy("Extracting…");
@@ -535,6 +574,12 @@ export default function App() {
         const images = await pdfToImages(pdf, name, choice.format, choice.dpi);
         ok = images.length === 1 ? await saveFile(images[0].name, images[0].bytes) : await saveFiles(images, "Choose a folder for the page images", `${name}-images.zip`);
         if (ok) flash(`Exported ${images.length} image${images.length === 1 ? "" : "s"}`);
+      } else if (choice.format === "xlsx") {
+        setBusy("Converting to Excel…");
+        const sheets = await pdfToSheets(pdf);
+        if (sheets.every((s) => s.rows.length === 0)) throw new Error("There's no text to put in a spreadsheet. If this is a scan, run OCR first.");
+        ok = await saveFile(`${name}.xlsx`, xlsx(sheets));
+        if (ok) flash("Exported");
       } else {
         setBusy(choice.format === "docx" ? "Converting to Word…" : "Converting to PowerPoint…");
         const out = await convertOffice(pdf, `${name}.pdf`, choice.format);
@@ -582,6 +627,22 @@ export default function App() {
     } finally {
       setBusy(null);
     }
+  };
+
+  const openWebPage = async (url: string) => {
+    const mode = hasDoc ? "insert" : "open";
+    setDialog(null);
+    setBusy("Loading the web page…");
+    let file;
+    try {
+      file = await captureWebPage(url);
+    } catch (err) {
+      flash((err as Error).message, "error");
+      return;
+    } finally {
+      setBusy(null);
+    }
+    await openFiles([file], mode);
   };
 
   const openSettings = () => {
@@ -900,6 +961,7 @@ export default function App() {
           onChange={changePicked}
           onDelete={deletePicked}
           onOcr={runOcr}
+          onCertify={() => setDialog("certify")}
         />
       )}
 
@@ -912,6 +974,11 @@ export default function App() {
             <button className="primary big" onClick={() => pickFiles().then((f) => openFiles(f, "open"))}>
               Choose files
             </button>
+            <p>
+              <button className="link" onClick={() => setDialog("web")}>
+                Open a web page as PDF
+              </button>
+            </p>
             <p>
               <button className="link" onClick={() => setDialog("requests")}>
                 See documents sent for signature
@@ -939,6 +1006,9 @@ export default function App() {
               <button onClick={() => pickFiles().then((f) => openFiles(f, "insert"))} title="Insert pages from another PDF after the selection">
                 + From file
               </button>
+              <button className="wide" onClick={() => setDialog("web")} title="Insert a web page, saved as PDF, after the selection">
+                + Web page
+              </button>
               <button disabled={!sel} onClick={extract} title="Save the selected pages as a new PDF">Extract</button>
               <button disabled={doc.pages.length < 2} onClick={() => setDialog("split")}>Split…</button>
             </div>
@@ -954,6 +1024,7 @@ export default function App() {
           </aside>
 
           <main className="viewer" ref={viewerRef} onScroll={onViewerScroll}>
+            {digitalSigs.length > 0 && <SignatureBanner sigs={digitalSigs} edited={!untouchedSource(doc)} onDetails={() => setDialog("signatures")} />}
             {doc.pages.map((page, i) => {
               const w = Math.round(displaySize(page).width * zoom * PX_PER_PT);
               return (
@@ -1058,6 +1129,15 @@ export default function App() {
           }}
         />
       )}
+      {dialog === "certify" && (
+        <CertSignDialog
+          blocked={saveSettings.protection ? "A password-protected file can't also be digitally signed here. Turn off the password under Protect first." : null}
+          onSign={signWithCertificate}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === "signatures" && <SignaturesDialog sigs={digitalSigs} onClose={() => setDialog(null)} />}
+      {dialog === "web" && <WebPageDialog insert={hasDoc} onCapture={openWebPage} onSettings={openSettings} onClose={() => setDialog(null)} />}
       {dialog === "export" && <ExportDialog selectedCount={selected.size} onExport={exportAs} onClose={() => setDialog(null)} />}
       {dialog === "split" && (
         <SplitDialog pageCount={doc.pages.length} onSplit={split} onClose={() => setDialog(null)} />

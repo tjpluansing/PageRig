@@ -58,7 +58,7 @@ interface CallOptions {
   settings?: ServerSettings;
 }
 
-async function call<T>(path: string, { method = "GET", body, raw, auth = true, settings = loadSettings() }: CallOptions = {}): Promise<T> {
+export async function call<T>(path: string, { method = "GET", body, raw, auth = true, settings = loadSettings() }: CallOptions = {}): Promise<T> {
   if (!settings.url) throw new ApiError(0, "Set the PageRig server's address in Settings first.");
   const headers: Record<string, string> = {};
   if (auth) headers.authorization = `Bearer ${settings.apiKey}`;
@@ -134,6 +134,8 @@ export interface SendRequest {
   message?: string;
   ordered: boolean;
   expiresDays?: number | null;
+  /** Email anyone yet to sign again every this many days; null for no automatic reminders. */
+  remindDays?: number | null;
   signers: Recipient[];
 }
 
@@ -147,6 +149,7 @@ export interface EnvelopeSummary {
   createdAt: string;
   completedAt: string | null;
   expiresAt: string | null;
+  remindDays: number | null;
   ordered: boolean;
   signers: { name: string; email: string; status: SignerStatus; viewedAt: string | null; signedAt: string | null; declineReason: string | null }[];
 }
@@ -173,7 +176,7 @@ export interface TemplateSummary {
 const sender = (s = loadSettings()) => ({ senderName: s.senderName, senderEmail: s.senderEmail });
 
 export const signing = {
-  config: (settings?: ServerSettings) => call<{ signing: boolean }>("/api/config", { auth: false, settings }),
+  config: (settings?: ServerSettings) => call<{ signing: boolean; capture?: boolean }>("/api/config", { auth: false, settings }),
   /** Checks the address and key by listing requests. */
   check: (settings: ServerSettings) => call<EnvelopeSummary[]>("/api/envelopes", { settings }),
 

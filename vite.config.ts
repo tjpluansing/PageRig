@@ -42,6 +42,9 @@ export default defineConfig({
   clearScreen: false,
   server: { port: 1420, strictPort: true },
   envPrefix: ["VITE_", "TAURI_ENV_"],
+  // Digital signatures live in server/sign/pades.mjs, shared with the server;
+  // make its imports use the app's copies of these libraries.
+  resolve: { dedupe: ["pdf-lib", "node-forge"] },
   // pdf.js and pdf-lib are large; the app is local-first so one bundle is fine.
   build: { target: "es2022", sourcemap: true, chunkSizeWarningLimit: 2000 },
   test: { environment: "node", include: ["src/**/*.test.ts"] },
