@@ -58,7 +58,7 @@ interface CallOptions {
   settings?: ServerSettings;
 }
 
-async function call<T>(path: string, { method = "GET", body, raw, auth = true, settings = loadSettings() }: CallOptions = {}): Promise<T> {
+export async function call<T>(path: string, { method = "GET", body, raw, auth = true, settings = loadSettings() }: CallOptions = {}): Promise<T> {
   if (!settings.url) throw new ApiError(0, "Set the PageRig server's address in Settings first.");
   const headers: Record<string, string> = {};
   if (auth) headers.authorization = `Bearer ${settings.apiKey}`;
@@ -176,7 +176,7 @@ export interface TemplateSummary {
 const sender = (s = loadSettings()) => ({ senderName: s.senderName, senderEmail: s.senderEmail });
 
 export const signing = {
-  config: (settings?: ServerSettings) => call<{ signing: boolean }>("/api/config", { auth: false, settings }),
+  config: (settings?: ServerSettings) => call<{ signing: boolean; capture?: boolean }>("/api/config", { auth: false, settings }),
   /** Checks the address and key by listing requests. */
   check: (settings: ServerSettings) => call<EnvelopeSummary[]>("/api/envelopes", { settings }),
 

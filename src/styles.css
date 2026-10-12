@@ -107,6 +107,7 @@ input {
   border-bottom: 1px solid var(--border);
 }
 .page-actions button { padding: 4px 6px; font-size: 13px; }
+.page-actions button.wide { grid-column: 1 / -1; }
 .selection-label {
   grid-column: 1 / -1;
   color: var(--muted);

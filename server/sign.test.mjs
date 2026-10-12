@@ -60,7 +60,7 @@ after(() => {
 describe("signature requests", () => {
   test("sending needs the API key", async () => {
     assert.equal((await call("GET", "/api/envelopes", null, { auth: false })).status, 401);
-    assert.deepEqual((await call("GET", "/api/config", null, { auth: false })).data, { signing: true });
+    assert.equal((await call("GET", "/api/config", null, { auth: false })).data.signing, true);
   });
 
   test("bad requests are refused with a reason", async () => {
