@@ -1,8 +1,9 @@
 // The legacy build polyfills very new JS APIs that the desktop webviews
 // (WebKitGTK on Linux, older WKWebView on macOS) don't have yet.
-import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { AnnotationMode, getDocument, GlobalWorkerOptions, OPS, type PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import { normalizeRotation, type DocState, type PageRef, type Source } from "./document";
+import { FONT_CSS, type FontKey, type PageFrame } from "./objects";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -18,6 +19,7 @@ interface Loaded {
   pdf: PDFDocumentProxy;
   info: PageInfo[];
   text: Map<number, string>;
+  widgets: Map<number, Promise<FormWidget[]>>;
 }
 
 const cache = new Map<string, Promise<Loaded>>();
@@ -39,7 +41,7 @@ export async function inspectPdf(bytes: Uint8Array, password?: string): Promise<
 
 export function registerSource(source: Source, loaded: { pdf: PDFDocumentProxy; info: PageInfo[] }) {
   infoSync.set(source.id, loaded.info);
-  cache.set(source.id, Promise.resolve({ ...loaded, text: new Map() }));
+  cache.set(source.id, Promise.resolve({ ...loaded, text: new Map(), widgets: new Map() }));
 }
 
 async function loaded(source: Source): Promise<Loaded> {
@@ -47,7 +49,7 @@ async function loaded(source: Source): Promise<Loaded> {
   if (!entry) {
     entry = inspectPdf(source.bytes).then((l) => {
       infoSync.set(source.id, l.info);
-      return { ...l, text: new Map() };
+      return { ...l, text: new Map(), widgets: new Map() };
     });
     cache.set(source.id, entry);
   }
@@ -77,6 +79,17 @@ export function pageInfo(ref: PageRef): PageInfo {
   return baseInfo(ref);
 }
 
+/** Everything needed to map between page and screen coordinates (see objects.ts). */
+export function pageFrame(ref: PageRef): PageFrame {
+  const info = baseInfo(ref);
+  return {
+    width: info.width,
+    height: info.height,
+    crop: ref.crop,
+    rotation: normalizeRotation(info.rotate + ref.rotation),
+  };
+}
+
 /**
  * Render a page into `canvas` so that it is `cssWidth` CSS pixels wide,
  * applying crop and rotation the same way export does.
@@ -95,23 +108,8 @@ export async function renderPage(
   const px = scale * dpr;
 
   // 1. Render the unrotated page.
-  const raw = document.createElement("canvas");
-  raw.width = Math.ceil(info.width * px);
-  raw.height = Math.ceil(info.height * px);
-  const rawCtx = raw.getContext("2d")!;
-  rawCtx.fillStyle = "#fff";
-  rawCtx.fillRect(0, 0, raw.width, raw.height);
-
-  if (ref.sourceId !== null) {
-    const source = doc.sources[ref.sourceId];
-    if (!source) return;
-    const { pdf } = await loaded(source);
-    if (isCancelled()) return;
-    const page = await pdf.getPage(ref.sourceIndex + 1);
-    const viewport = page.getViewport({ scale: px, rotation: 0 });
-    await page.render({ canvas: raw, viewport }).promise;
-    if (isCancelled()) return;
-  }
+  const raw = await renderUnrotated(doc, ref, px, isCancelled);
+  if (!raw) return;
 
   // 2. Copy the cropped region, rotated, into the target canvas.
   const c = ref.crop ?? { top: 0, right: 0, bottom: 0, left: 0 };
@@ -134,8 +132,45 @@ export async function renderPage(
   ctx.restore();
 }
 
+/**
+ * Render the whole page without crop or rotation at `px` pixels per point,
+ * on a white background. Returns null if cancelled or the source is gone.
+ */
+export async function renderUnrotated(
+  doc: DocState,
+  ref: PageRef,
+  px: number,
+  isCancelled: () => boolean = () => false,
+): Promise<HTMLCanvasElement | null> {
+  const info = baseInfo(ref);
+  const raw = document.createElement("canvas");
+  raw.width = Math.ceil(info.width * px);
+  raw.height = Math.ceil(info.height * px);
+  const rawCtx = raw.getContext("2d")!;
+  rawCtx.fillStyle = "#fff";
+  rawCtx.fillRect(0, 0, raw.width, raw.height);
+
+  if (ref.sourceId !== null) {
+    const source = doc.sources[ref.sourceId];
+    if (!source) return null;
+    const { pdf } = await loaded(source);
+    if (isCancelled()) return null;
+    const page = await pdf.getPage(ref.sourceIndex + 1);
+    const viewport = page.getViewport({ scale: px, rotation: 0 });
+    // Form fields are drawn by the HTML overlay so they can be filled in.
+    await page.render({ canvas: raw, viewport, annotationMode: AnnotationMode.ENABLE_FORMS }).promise;
+    if (isCancelled()) return null;
+  }
+  return raw;
+}
+
 /** Plain text of one page, cached. */
 export async function pageText(doc: DocState, ref: PageRef): Promise<string> {
+  const ocr = ref.ocr?.map((l) => l.text).join("\n") ?? "";
+  return [await fileText(doc, ref), ocr].filter(Boolean).join("\n");
+}
+
+async function fileText(doc: DocState, ref: PageRef): Promise<string> {
   if (ref.sourceId === null) return "";
   const source = doc.sources[ref.sourceId];
   if (!source) return "";
@@ -181,4 +216,284 @@ export async function searchDoc(doc: DocState, query: string, isCancelled: () =>
     hits.push({ pageId: ref.id, pageNumber: i + 1, snippet, count });
   }
   return hits;
+}
+
+export interface FormWidget {
+  /** pdf.js annotation id, unique within the page. */
+  id: string;
+  name: string;
+  type: "text" | "checkbox" | "radio" | "dropdown" | "list" | "other";
+  /** Unrotated page space, origin top-left (same as page objects). */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  readOnly: boolean;
+  multiline: boolean;
+  /** Value stored in the file. */
+  value: string | boolean;
+  /** For checkboxes and radio buttons: the value this widget stands for. */
+  exportValue?: string;
+  options?: { value: string; label: string }[];
+  fontSize?: number;
+}
+
+/** The fillable form fields on a page, read once and cached. */
+export async function formWidgets(doc: DocState, ref: PageRef): Promise<FormWidget[]> {
+  if (ref.sourceId === null) return [];
+  const source = doc.sources[ref.sourceId];
+  if (!source) return [];
+  const l = await loaded(source);
+  let entry = l.widgets.get(ref.sourceIndex);
+  if (!entry) {
+    entry = readWidgets(l.pdf, ref.sourceIndex);
+    l.widgets.set(ref.sourceIndex, entry);
+  }
+  return entry;
+}
+
+/** Every field name in a source file, so new fields don't collide with them. */
+export async function sourceFieldNames(doc: DocState): Promise<Set<string>> {
+  const names = new Set<string>();
+  for (const source of Object.values(doc.sources)) {
+    const objs = await (await loaded(source)).pdf.getFieldObjects();
+    for (const name of objs?.keys() ?? []) names.add(name);
+  }
+  return names;
+}
+
+// pdf.js annotation data isn't typed in detail; these are the fields we use.
+interface RawWidget {
+  id: string;
+  subtype: string;
+  fieldName?: string;
+  fieldType?: string;
+  rect: number[];
+  readOnly?: boolean;
+  multiLine?: boolean;
+  checkBox?: boolean;
+  radioButton?: boolean;
+  combo?: boolean;
+  fieldValue?: unknown;
+  exportValue?: string;
+  buttonValue?: string;
+  options?: { exportValue: string; displayValue: string }[];
+  textContent?: string[];
+  defaultAppearanceData?: { fontSize?: number };
+  hidden?: boolean;
+}
+
+async function readWidgets(pdf: PDFDocumentProxy, index: number): Promise<FormWidget[]> {
+  const page = await pdf.getPage(index + 1);
+  const [vx0, , , vy1] = page.view;
+  const annots = (await page.getAnnotations({ intent: "display" })) as RawWidget[];
+  const widgets: FormWidget[] = [];
+  for (const a of annots) {
+    if (a.subtype !== "Widget" || !a.fieldName || a.hidden) continue;
+    const [x0, y0, x1, y1] = a.rect;
+    const base = {
+      id: a.id,
+      name: a.fieldName,
+      x: Math.min(x0, x1) - vx0,
+      y: vy1 - Math.max(y0, y1),
+      w: Math.abs(x1 - x0),
+      h: Math.abs(y1 - y0),
+      readOnly: !!a.readOnly,
+      multiline: !!a.multiLine,
+      fontSize: a.defaultAppearanceData?.fontSize || undefined,
+    };
+    if (a.fieldType === "Tx") {
+      widgets.push({ ...base, type: "text", value: typeof a.fieldValue === "string" ? a.fieldValue : "" });
+    } else if (a.fieldType === "Btn" && a.checkBox) {
+      const on = a.exportValue ?? "Yes";
+      widgets.push({ ...base, type: "checkbox", exportValue: on, value: a.fieldValue === on });
+    } else if (a.fieldType === "Btn" && a.radioButton) {
+      widgets.push({ ...base, type: "radio", exportValue: a.buttonValue, value: typeof a.fieldValue === "string" ? a.fieldValue : "" });
+    } else if (a.fieldType === "Ch") {
+      const value = Array.isArray(a.fieldValue) ? String(a.fieldValue[0] ?? "") : String(a.fieldValue ?? "");
+      widgets.push({
+        ...base,
+        type: a.combo ? "dropdown" : "list",
+        value,
+        options: (a.options ?? []).map((o) => ({ value: o.exportValue, label: o.displayValue })),
+      });
+    }
+  }
+  return widgets;
+}
+
+// ---- Editable text and images ----------------------------------------------
+
+/** A run of text on the page that can be replaced. Unrotated page space, top-left origin. */
+export interface TextRun {
+  text: string;
+  x: number;
+  /** Top of the run's box. */
+  y: number;
+  w: number;
+  h: number;
+  baseline: number;
+  fontSize: number;
+  font: FontKey;
+  bold: boolean;
+}
+
+/** Text runs from the file plus any OCR lines, for the Edit text tool. */
+export async function textRuns(doc: DocState, ref: PageRef): Promise<TextRun[]> {
+  const ocr: TextRun[] = (ref.ocr ?? []).map((l) => ({
+    text: l.text,
+    x: l.x,
+    y: l.y,
+    w: l.w,
+    h: l.h,
+    baseline: l.baseline,
+    fontSize: Math.round((l.baseline - l.y) / 0.75),
+    font: "helvetica",
+    bold: false,
+  }));
+  if (ref.sourceId === null) return ocr;
+  const source = doc.sources[ref.sourceId];
+  if (!source) return ocr;
+  const { pdf } = await loaded(source);
+  const page = await pdf.getPage(ref.sourceIndex + 1);
+  const [vx0, , , vy1] = page.view;
+  const content = await page.getTextContent();
+  const runs: TextRun[] = [];
+  for (const item of content.items) {
+    if (!("str" in item) || !item.str.trim()) continue;
+    const [a, b, c, d, e, f] = item.transform as number[];
+    // Only horizontal text can be replaced in place.
+    if (Math.abs(b) > 0.01 || Math.abs(c) > 0.01 || a <= 0) continue;
+    const fontSize = Math.abs(d) || item.height;
+    const style = content.styles[item.fontName] as { fontFamily?: string } | undefined;
+    const family = `${style?.fontFamily ?? ""} ${item.fontName}`.toLowerCase();
+    const font: FontKey = /mono|courier/.test(family) ? "courier" : /serif|times|roman|georgia/.test(family) && !/sans/.test(family) ? "times" : "helvetica";
+    const baseline = vy1 - f;
+    const run: TextRun = {
+      text: item.str,
+      x: e - vx0,
+      y: baseline - fontSize * 0.85,
+      w: item.width,
+      h: fontSize * 1.1,
+      baseline,
+      fontSize: Math.round(fontSize * 10) / 10,
+      font,
+      bold: /bold|black|heavy/.test(family),
+    };
+    // Join pieces of the same line that pdf.js split up.
+    const prev = runs[runs.length - 1];
+    if (
+      prev &&
+      Math.abs(prev.baseline - run.baseline) < 0.5 &&
+      Math.abs(prev.fontSize - run.fontSize) < 0.5 &&
+      run.x >= prev.x + prev.w - 1 &&
+      run.x - (prev.x + prev.w) < run.fontSize * 0.4
+    ) {
+      const gap = run.x - (prev.x + prev.w) > run.fontSize * 0.15 && !prev.text.endsWith(" ") ? " " : "";
+      prev.text += gap + run.text;
+      prev.w = run.x + run.w - prev.x;
+      continue;
+    }
+    runs.push(run);
+  }
+  return [...runs, ...ocr];
+}
+
+let measureCtx: CanvasRenderingContext2D | null = null;
+
+/**
+ * Boxes around every match of `query` on the page (file text and OCR text),
+ * in unrotated page space. Used to redact search results.
+ */
+export async function findText(doc: DocState, ref: PageRef, query: string): Promise<{ x: number; y: number; w: number; h: number }[]> {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  measureCtx ??= document.createElement("canvas").getContext("2d");
+  const boxes: { x: number; y: number; w: number; h: number }[] = [];
+  for (const run of await textRuns(doc, ref)) {
+    const lower = run.text.toLowerCase();
+    // Where each character starts, from the closest standard font's widths scaled to the run.
+    const width = (s: string) => {
+      if (!measureCtx) return s.length;
+      measureCtx.font = `${run.bold ? 700 : 400} 100px ${FONT_CSS[run.font]}`;
+      return measureCtx.measureText(s).width;
+    };
+    const total = width(run.text) || 1;
+    const at = (i: number) => run.x + (width(run.text.slice(0, i)) / total) * run.w;
+    for (let i = lower.indexOf(q); i >= 0; i = lower.indexOf(q, i + q.length)) {
+      // A little margin, since the widths are estimates.
+      const pad = run.fontSize * 0.08;
+      const x0 = at(i) - pad;
+      const x1 = at(i + q.length) + pad;
+      boxes.push({ x: x0, y: run.y - pad, w: x1 - x0, h: run.h + pad * 2 });
+    }
+  }
+  return boxes;
+}
+
+/** Where an image is painted on the page (bounding box, unrotated page space, top-left origin). */
+export interface ImageRegion {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+type Matrix = [number, number, number, number, number, number];
+const multiply = (m: Matrix, n: Matrix): Matrix => [
+  m[0] * n[0] + m[2] * n[1],
+  m[1] * n[0] + m[3] * n[1],
+  m[0] * n[2] + m[2] * n[3],
+  m[1] * n[2] + m[3] * n[3],
+  m[0] * n[4] + m[2] * n[5] + m[4],
+  m[1] * n[4] + m[3] * n[5] + m[5],
+];
+
+const IMAGE_OPS = new Set([
+  OPS.paintImageXObject,
+  OPS.paintInlineImageXObject,
+  OPS.paintImageMaskXObject,
+  OPS.paintImageXObjectRepeat,
+]);
+
+/** Images drawn on a page, found by replaying the transform stack of its operator list. */
+export async function imageRegions(doc: DocState, ref: PageRef): Promise<ImageRegion[]> {
+  if (ref.sourceId === null) return [];
+  const source = doc.sources[ref.sourceId];
+  if (!source) return [];
+  const { pdf } = await loaded(source);
+  const page = await pdf.getPage(ref.sourceIndex + 1);
+  const [vx0, vy0, vx1, vy1] = page.view;
+  const ops = await page.getOperatorList();
+  const regions: ImageRegion[] = [];
+  let ctm: Matrix = [1, 0, 0, 1, 0, 0];
+  const stack: Matrix[] = [];
+  for (let i = 0; i < ops.fnArray.length; i++) {
+    const fn = ops.fnArray[i];
+    const args = ops.argsArray[i];
+    if (fn === OPS.save) stack.push(ctm);
+    else if (fn === OPS.restore) ctm = stack.pop() ?? ctm;
+    else if (fn === OPS.transform) ctm = multiply(ctm, args as Matrix);
+    else if (fn === OPS.paintFormXObjectBegin) {
+      stack.push(ctm);
+      if (Array.isArray(args?.[0]) && args[0].length === 6) ctm = multiply(ctm, args[0] as Matrix);
+    } else if (fn === OPS.paintFormXObjectEnd) ctm = stack.pop() ?? ctm;
+    else if (IMAGE_OPS.has(fn)) {
+      const corners = [
+        [0, 0],
+        [1, 0],
+        [0, 1],
+        [1, 1],
+      ].map(([u, v]) => [ctm[0] * u + ctm[2] * v + ctm[4], ctm[1] * u + ctm[3] * v + ctm[5]]);
+      const xs = corners.map((p) => p[0]);
+      const ys = corners.map((p) => p[1]);
+      const x0 = Math.max(vx0, Math.min(...xs));
+      const x1 = Math.min(vx1, Math.max(...xs));
+      const y0 = Math.max(vy0, Math.min(...ys));
+      const y1 = Math.min(vy1, Math.max(...ys));
+      if (x1 - x0 < 4 || y1 - y0 < 4) continue;
+      regions.push({ x: x0 - vx0, y: vy1 - y1, w: x1 - x0, h: y1 - y0 });
+    }
+  }
+  return regions;
 }
