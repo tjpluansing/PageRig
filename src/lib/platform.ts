@@ -76,6 +76,7 @@ const SAVE_TYPES: Record<string, SaveType> = {
   jpg: { label: "JPEG image", extension: "jpg", mime: "image/jpeg" },
   zip: { label: "ZIP archive", extension: "zip", mime: "application/zip" },
   docx: { label: "Word document", extension: "docx", mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+  xlsx: { label: "Excel workbook", extension: "xlsx", mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
   pptx: { label: "PowerPoint presentation", extension: "pptx", mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation" },
 };
 
