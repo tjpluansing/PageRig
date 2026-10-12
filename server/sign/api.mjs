@@ -27,6 +27,7 @@ import { timingSafeEqual } from "node:crypto";
 import { PDFDocument } from "pdf-lib";
 import { finalizeDocument, dataUrlBytes } from "./finalize.mjs";
 import { completedEmail, declinedEmail, reminderEmail, requestEmail } from "./mail.mjs";
+import { signPdf } from "./pades.mjs";
 import { sha256 } from "./store.mjs";
 
 export const FIELD_TYPES = ["signature", "initials", "date", "name", "text", "checkbox"];
@@ -52,8 +53,10 @@ export class SignService {
    * @param {string} o.apiKey      key the app must present to send requests; empty disables sending
    * @param {string} o.appUrl      where the PageRig web app lives, for signing links
    * @param {boolean} [o.trustProxy] read the client address from X-Forwarded-For
+   * @param {import("./pades.mjs").SigningIdentity | null} [o.seal] certificate to digitally seal completed documents with
    */
-  constructor({ store, mailer, apiKey, appUrl, trustProxy = false, log = console.error, config = {} }) {
+  constructor({ store, mailer, apiKey, appUrl, trustProxy = false, log = console.error, seal = null, config = {} }) {
+    this.seal = seal;
     this.config = config;
     this.store = store;
     this.mailer = mailer;
@@ -374,7 +377,9 @@ export class SignService {
     const env = this.store.envelope(id);
     const signers = this.store.signers(id);
     const original = await this.store.readFile("original", id);
-    const final = await finalizeDocument(original, { envelope: env, signers, fields: this.store.fields(id), events: this.store.events(id) });
+    let final = await finalizeDocument(original, { envelope: env, signers, fields: this.store.fields(id), events: this.store.events(id) });
+    // A digital seal makes PDF readers show the document as unchanged since completion.
+    if (this.seal) final = await signPdf(final, this.seal, { reason: `Signed by ${signers.map((s) => s.name).join(", ")} with PageRig` });
     await this.store.writeFile("final", id, final);
     this.store.setEnvelope(id, { final_sha: sha256(final) });
     const recipients = [...signers.map((s) => s.email), env.sender_email].filter((e, i, all) => e && all.indexOf(e) === i);

@@ -15,6 +15,8 @@
 //   SMTP_URL        mail server for signing emails, e.g. smtps://user:pass@smtp.example.com
 //   MAIL_FROM       sender address for those emails, e.g. "PageRig <sign@example.com>"
 //   TRUST_PROXY     set to 1 behind a reverse proxy, to record signers' real IP addresses
+//   SEAL_CERT       a .p12 / .pfx file to digitally seal completed documents with (optional)
+//   SEAL_CERT_PASSWORD  its password
 //   STATIC_DIR      folder with the built web app to serve (default ./public, if present)
 //   MAX_MB          largest document accepted, in megabytes (default 50)
 //   TIMEOUT_S       longest a conversion may run, in seconds (default 120)
@@ -25,7 +27,7 @@
 //   CHROMIUM_NO_SANDBOX  set to 1 where Chromium's sandbox can't run (as in the Docker image)
 //   CAPTURE_ALLOW_PRIVATE  set to 1 to allow saving pages on private networks (intranets)
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { extname, join, normalize, resolve, sep } from "node:path";
@@ -34,6 +36,7 @@ import { CaptureError, capture, checkUrl, chromiumPath } from "./capture.mjs";
 import { TYPES, convert, plan } from "./convert.mjs";
 import { HttpError, SignService } from "./sign/api.mjs";
 import { createMailer } from "./sign/mail.mjs";
+import { readP12 } from "./sign/pades.mjs";
 import { Store } from "./sign/store.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -70,6 +73,7 @@ export function createApp({
     apiKey: env.SIGN_API_KEY ?? "",
     appUrl: env.APP_URL ?? publicUrl,
     trustProxy: env.TRUST_PROXY === "1",
+    seal: env.SEAL_CERT ? readP12(readFileSync(env.SEAL_CERT), env.SEAL_CERT_PASSWORD ?? "") : null,
     config: { capture: !!chromium && !!env.SIGN_API_KEY },
   });
   const captureOptions = { chromium, noSandbox: env.CHROMIUM_NO_SANDBOX === "1" };
