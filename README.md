@@ -15,15 +15,16 @@ A PDF viewer and editor that runs in the browser and as a desktop app (Windows, 
 - **Protect:** require a password to open, restrict printing, copying and editing (AES-256), and strip metadata, comments, scripts and attachments.
 - **Password-protected files** open for editing in every standard encryption type. Files whose owner restricted changes need the permissions password to save.
 - **Convert:** open JPG, PNG, WebP, GIF and other images as PDF pages, and Word, Excel, PowerPoint, OpenDocument, RTF, text and HTML files as PDFs. Export pages as PNG or JPEG images (zipped in the browser), or as an editable Word document or PowerPoint presentation.
+- **Signature requests:** place signature, initials, date, name, text and checkbox fields for one or more signers, then send. Each signer gets an emailed link, signs in the browser (in order, if you choose), and everyone receives the signed PDF with a certificate page listing who signed, when and from where. Track progress, send reminders, cancel, and reuse documents as templates, including bulk sending one template to a list of people.
 - **Undo and redo** for every edit.
-- Files never leave your machine, except Office files on the web app, which go to your own converter server (see below). Pages are copied rather than re-rendered, so text stays selectable and file size stays small.
+- Files never leave your machine, except Office files on the web app and documents you send for signature, which go to your own PageRig server (see below). Pages are copied rather than re-rendered, so text stays selectable and file size stays small.
 
 ## Roadmap
 
 1. Foundation, viewer and page management *(done)*
 2. Fill and sign, forms, editing existing text and images, OCR *(done)*
 3. Encryption and permissions, redaction and sanitizing, conversion to and from Office and images *(done)*
-4. Signature requests, tracking, templates and bulk send *(next)*
+4. Signature requests, tracking, templates and bulk send *(done)*
 
 ## Development
 
@@ -39,20 +40,36 @@ npm run tauri dev    # desktop app with hot reload
 npm run tauri build  # desktop installers in src-tauri/target/release/bundle/
 ```
 
-### Office conversion
+### The PageRig server
 
-Office files are converted with [LibreOffice](https://www.libreoffice.org/). Images need nothing extra.
+Office conversion and signature requests run on a small server in `server/`, which you host. Image conversion and everything else need no server. The Docker image bundles the web app too, so one container is a complete PageRig site:
 
-- **Desktop app:** uses LibreOffice installed on the computer. It's found on the PATH or in its usual install folder; set `PAGERIG_SOFFICE` to point at `soffice` if it's somewhere else.
-- **Web app:** runs the small server in `server/` and builds the app with its address:
+```sh
+docker build -f server/Dockerfile -t pagerig .
+docker run -p 8080:8080 -v pagerig-data:/data \
+  -e PUBLIC_URL=https://pagerig.example.com \
+  -e SIGN_API_KEY=a-long-random-secret \
+  -e SMTP_URL=smtps://user:password@smtp.example.com \
+  -e MAIL_FROM="PageRig <sign@example.com>" \
+  pagerig
+```
 
-  ```sh
-  docker build -t pagerig-converter server
-  docker run -p 8080:8080 -e ALLOWED_ORIGIN=https://your-pagerig-site pagerig-converter
-  VITE_CONVERTER_URL=https://your-converter npm run build
-  ```
+Then open the site, choose **Request signatures**, and enter the server address and API key under **Sent requests → Server settings** (stored in that browser). The desktop app connects the same way.
 
-  The server keeps nothing: each file is converted in a temporary folder that's deleted straight after. `MAX_MB`, `TIMEOUT_S` and `CONCURRENCY` limit file size, conversion time and parallel jobs. Without `VITE_CONVERTER_URL`, the web app still converts images, and tells people Office files need the desktop app.
+| Setting | What it does |
+| --- | --- |
+| `PUBLIC_URL` | The server's public address. Signing links point here unless `APP_URL` says otherwise. |
+| `APP_URL` | Where the web app is, if it isn't served by this server. |
+| `SIGN_API_KEY` | Needed to send requests; without it, signing is off and only conversion runs. Signers don't need it. |
+| `SMTP_URL`, `MAIL_FROM` | How signing emails are sent. Without `SMTP_URL`, emails are printed to the server log instead, which is handy for trying it out. |
+| `DATA_DIR` | Where requests, documents and the SQLite database are kept (`/data` in Docker; back it up). |
+| `ALLOWED_ORIGIN` | The web app's origin, if it's served from somewhere else (CORS). |
+| `TRUST_PROXY` | Set to `1` behind a reverse proxy so signers' real IP addresses are recorded. |
+| `MAX_MB`, `TIMEOUT_S`, `CONCURRENCY` | Limits on document size, conversion time and parallel conversions. |
+
+To run it without Docker: install LibreOffice (for conversion), then `cd server && npm install && SIGN_API_KEY=... npm start`, and build the web app with `VITE_SERVER_URL=http://your-server npm run build`. The desktop app converts Office files with LibreOffice installed on the computer instead (found on the PATH or in its usual folder, or set `PAGERIG_SOFFICE`).
+
+How signing works: each signer's link carries a random token, of which the server keeps only a hash. Signers agree to sign electronically before finishing, and the server records when each person was emailed, opened, signed or declined, with their IP address and browser. When everyone has signed, it draws the entries into the PDF, adds a certificate page, and keeps the SHA-256 fingerprint of the result, so anyone can later check a copy is unchanged (`POST /api/verify`). This is a standard electronic signature with an audit trail, which is legally recognised for most documents in the US, UK and EU; it is not a certificate-based digital signature.
 
 Converting PDF to Word or PowerPoint keeps text editable but places it in positioned boxes, so complex layouts can need tidying. PDF to Excel and capturing web pages as PDF aren't supported yet.
 
@@ -68,10 +85,12 @@ Converting PDF to Word or PowerPoint keeps text editable but places it in positi
 | `src/lib/security.ts`, `crypto.ts` | Encrypting and decrypting PDFs (RC4, AES-128, AES-256). |
 | `src/lib/redact.ts`, `sanitize.ts` | Redaction and removing hidden information when saving. |
 | `src/lib/convert.ts`, `office.ts` | Images to and from PDF, ZIP bundling, and Office conversion through LibreOffice. |
+| `src/lib/signing.ts` | Talking to the server's signing service; turning placed fields into a request. |
+| `src/components/SignRequests.tsx`, `SignPage.tsx` | Sending, tracking and templates; the page signers use. |
 | `src/lib/platform.ts` | Opening and saving files in the browser vs. the desktop app. |
 | `src/components/` | Thumbnails, page canvas, the on-page overlay, the Fill & sign toolbar and dialogs. |
 | `src-tauri/` | The Tauri desktop shell, including the LibreOffice command (`src/office.rs`). |
-| `server/` | The converter server for the web app (Node, no dependencies) and its Dockerfile. |
+| `server/` | The PageRig server: Office conversion, the signing service (`sign/`: storage, email, the signed PDF and certificate) and its Dockerfile. |
 
 Keyboard shortcuts: Ctrl/Cmd + O open, S save, F search, Z undo, Shift+Z or Y redo, A select all, +/- zoom. Delete removes the selected object, or the selected pages. Esc returns to the Select tool.
 

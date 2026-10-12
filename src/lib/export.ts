@@ -247,6 +247,9 @@ class ExportContext {
         return this.drawRect(page, obj, place);
       case "redact":
         return this.drawRedact(page, obj, place);
+      case "sign":
+        // Placeholders for signers; the signing service fills them in.
+        return;
     }
   }
 

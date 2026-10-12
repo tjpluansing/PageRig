@@ -33,9 +33,14 @@ import {
   type PageObject,
   type RectObject,
   type RedactObject,
+  type SignFieldObject,
+  type SignFieldType,
   type TextObject,
+  SIGN_FIELD_SIZES,
   TEXT_PAD,
 } from "./lib/objects";
+import { requestFields, signersUsed, signing } from "./lib/signing";
+import { RequestsDialog, SendDialog, ServerSettingsDialog, type SendChoice } from "./components/SignRequests";
 import { recognizePage } from "./lib/ocr";
 import { useHistory } from "./lib/useHistory";
 import { Thumbnails } from "./components/Thumbnails";
@@ -43,13 +48,13 @@ import { PageCanvas } from "./components/PageCanvas";
 import { CropDialog, SplitDialog } from "./components/Dialogs";
 import { PageOverlay, sizeText, type OverlayHandlers } from "./components/PageOverlay";
 import { imageSize, readImageFile, SignatureDialog, type SignatureRole } from "./components/SignatureDialog";
-import { STAMPS, ToolBar, type Stamp, type Tool } from "./components/ToolBar";
+import { RequestBar, STAMPS, ToolBar, type Stamp, type Tool } from "./components/ToolBar";
 import { DEFAULT_SAVE_SETTINGS, isProtectedSave, ProtectDialog, type SaveSettings } from "./components/ProtectDialog";
 
 const PX_PER_PT = 96 / 72;
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4];
 
-type Dialog = null | "crop" | "split" | "protect" | "export";
+type Dialog = null | "crop" | "split" | "protect" | "export" | "send" | "requests" | "server";
 
 const SIG_KEYS: Record<SignatureRole, string> = { signature: "pagerig.signature", initials: "pagerig.initials" };
 
@@ -97,6 +102,12 @@ export default function App() {
   const [pendingImage, setPendingImage] = useState<string | null>(null);
   const [takenNames, setTakenNames] = useState<Set<string>>(new Set());
   const [saveSettings, setSaveSettings] = useState<SaveSettings>(DEFAULT_SAVE_SETTINGS);
+  // Request signatures mode: which signer new fields are for, and how many signers there are.
+  const [requesting, setRequesting] = useState(false);
+  const [signer, setSigner] = useState(0);
+  const [signerCount, setSignerCount] = useState(1);
+  // Where to go back to when server settings close.
+  const [afterSettings, setAfterSettings] = useState<Dialog>(null);
 
   const viewerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -204,6 +215,16 @@ export default function App() {
         const width = tool === "signature" ? 150 : tool === "initials" ? 60 : Math.min(240, px.width * 0.75);
         const height = (width * px.height) / px.width;
         obj = makeObject<ImageObject>({ kind: "image", src, role: tool, w: width, h: height, ...at });
+        break;
+      }
+      case "req-signature":
+      case "req-initials":
+      case "req-date":
+      case "req-name":
+      case "req-text":
+      case "req-checkbox": {
+        const signType = tool.slice(4) as SignFieldType;
+        obj = makeObject<SignFieldObject>({ kind: "sign", signType, signer, required: true, ...SIGN_FIELD_SIZES[signType], ...at });
         break;
       }
       case "field-text":
@@ -527,6 +548,54 @@ export default function App() {
     }
   };
 
+  /** The document as signers will see it: redactions and clean-up applied, no password. */
+  const requestPdf = async () => {
+    await ensureExportable(doc);
+    return exportPdf(doc, doc.pages, { sanitize: saveSettings.sanitize });
+  };
+
+  const sendForSignature = async ({ request, templateName }: SendChoice) => {
+    setBusy("Sending…");
+    try {
+      const pdf = await requestPdf();
+      const fields = requestFields(doc);
+      if (templateName) await signing.saveTemplate(pdf, fields, { name: templateName, roles: request.signers.map((_, i) => `Signer ${i + 1}`), message: request.message });
+      await signing.send(pdf, fields, request);
+      setDialog(null);
+      flash(`Sent to ${request.signers.map((s) => s.name).join(", ")}. Track it under Sent requests.`);
+    } catch (err) {
+      flash((err as Error).message, "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const saveAsTemplate = async (name: string) => {
+    setBusy("Saving template…");
+    try {
+      const count = signersUsed(doc);
+      await signing.saveTemplate(await requestPdf(), requestFields(doc), { name, roles: Array.from({ length: count }, (_, i) => `Signer ${i + 1}`) });
+      setDialog(null);
+      flash(`Saved the template "${name}". Find it under Sent requests, Templates.`);
+    } catch (err) {
+      flash((err as Error).message, "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const openSettings = () => {
+    setAfterSettings(dialog);
+    setDialog("server");
+  };
+
+  const toggleRequesting = () => {
+    setRequesting((r) => !r);
+    setTool("select");
+    setPicked(null);
+    setSignerCount((n) => Math.max(n, signersUsed(doc)));
+  };
+
   const redactMatches = async () => {
     if (!hits) return;
     const marks: [string, RedactObject][] = [];
@@ -747,6 +816,10 @@ export default function App() {
           Export…
         </button>
         <span className="sep" />
+        <button disabled={!hasDoc} className={requesting ? "on" : ""} onClick={toggleRequesting} title="Place fields for other people to sign, then send it to them">
+          Request signatures
+        </button>
+        <span className="sep" />
         <button disabled={!history.canUndo} onClick={history.undo} title="Undo (Ctrl+Z)" aria-label="Undo">
           ↶
         </button>
@@ -793,7 +866,29 @@ export default function App() {
           onKeyDown={(e) => e.key === "Enter" && hits?.[0] && scrollToPage(hits[0].pageId)}
         />
       </header>
-      {hasDoc && (
+      {hasDoc && requesting && (
+        <RequestBar
+          tool={tool}
+          onTool={chooseTool}
+          signer={signer}
+          signerCount={signerCount}
+          onSigner={(i) => {
+            setSigner(i);
+            if (pickedObject?.kind === "sign") changePicked({ signer: i } as Partial<PageObject>);
+          }}
+          onAddSigner={() => {
+            setSigner(signerCount);
+            setSignerCount(signerCount + 1);
+          }}
+          selected={pickedObject?.kind === "sign" ? pickedObject : null}
+          onChange={(patch) => changePicked(patch as Partial<PageObject>)}
+          onDelete={deletePicked}
+          onSend={() => setDialog("send")}
+          onRequests={() => setDialog("requests")}
+          canSend={signersUsed(doc) > 0}
+        />
+      )}
+      {hasDoc && !requesting && (
         <ToolBar
           tool={tool}
           onTool={chooseTool}
@@ -817,6 +912,11 @@ export default function App() {
             <button className="primary big" onClick={() => pickFiles().then((f) => openFiles(f, "open"))}>
               Choose files
             </button>
+            <p>
+              <button className="link" onClick={() => setDialog("requests")}>
+                See documents sent for signature
+              </button>
+            </p>
           </div>
         </main>
       ) : (
@@ -928,6 +1028,33 @@ export default function App() {
             setSaveSettings(settings);
             setDialog(null);
             flash(isProtectedSave(settings) ? "Protection will be applied when you save" : "Protection turned off");
+          }}
+        />
+      )}
+      {dialog === "send" && (
+        <SendDialog
+          title={stem(docName)}
+          signerCount={Math.max(1, signersUsed(doc))}
+          onSend={sendForSignature}
+          onSaveTemplate={saveAsTemplate}
+          onSettings={openSettings}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === "requests" && (
+        <RequestsDialog
+          onClose={() => setDialog(null)}
+          onSettings={openSettings}
+          onDownload={(name, bytes) => saveFile(name, bytes)}
+          flash={flash}
+        />
+      )}
+      {dialog === "server" && (
+        <ServerSettingsDialog
+          onClose={() => setDialog(afterSettings)}
+          onSaved={() => {
+            flash("Server settings saved");
+            setDialog(afterSettings);
           }}
         />
       )}

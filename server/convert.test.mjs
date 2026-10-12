@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { test } from "node:test";
-import { plan, safeName, server } from "./server.mjs";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { plan, safeName } from "./convert.mjs";
+import { createApp } from "./server.mjs";
 
 const hasSoffice = (() => {
   try {
@@ -28,6 +32,7 @@ test("file names can't leave the work folder", () => {
 });
 
 test("converts a text file to PDF and back to Word", { skip: !hasSoffice && "LibreOffice isn't installed" }, async () => {
+  const { server, store } = createApp({ env: { DATA_DIR: mkdtempSync(join(tmpdir(), "pagerig-test-")) } });
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
@@ -44,5 +49,6 @@ test("converts a text file to PDF and back to Word", { skip: !hasSoffice && "Lib
     assert.ok(bad.status === 200 || bad.status === 422);
   } finally {
     server.close();
+    store.close();
   }
 });

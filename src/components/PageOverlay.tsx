@@ -4,11 +4,13 @@ import {
   FONT_CSS,
   LINE_HEIGHT,
   MARK_GLYPHS,
+  SIGN_FIELD_LABELS,
   TEXT_PAD,
   fromDisplay,
   measureText,
   rotateVec,
   screenAngle,
+  signerColor,
   toDisplay,
   type FieldValue,
   type FontKey,
@@ -248,6 +250,22 @@ function ObjectBody({ obj, scale: s, editing, page, handlers }: { obj: PageObjec
       return <div className="obj-rect-body" style={{ background: obj.fill }} />;
     case "redact":
       return <div className="obj-redact-body" title="Marked for redaction" />;
+    case "sign":
+      return (
+        <div
+          className={`obj-sign-body${obj.signType === "checkbox" ? " box" : ""}`}
+          style={{ "--signer": signerColor(obj.signer), fontSize: Math.max(6, Math.min(11, obj.h * 0.5) * s) } as CSSProperties}
+          title={`${SIGN_FIELD_LABELS[obj.signType]} for signer ${obj.signer + 1}${obj.required ? "" : " (optional)"}`}
+        >
+          {obj.signType !== "checkbox" && (
+            <span>
+              {SIGN_FIELD_LABELS[obj.signType]}
+              {!obj.required && " (optional)"}
+            </span>
+          )}
+          <span className="signer-tag">{obj.signer + 1}</span>
+        </div>
+      );
     case "field":
       return (
         <div className="obj-field-body" style={{ fontSize: Math.max(6, Math.min(11, obj.h * 0.55) * s) }}>

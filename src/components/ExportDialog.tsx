@@ -36,7 +36,7 @@ export function ExportDialog({ selectedCount, onExport, onClose }: Props) {
   const [dpi, setDpi] = useState(150);
   const [selectedOnly, setSelectedOnly] = useState(selectedCount > 0);
   const office = format === "docx" || format === "pptx";
-  const blocked = office && !officeAvailable;
+  const blocked = office && !officeAvailable();
 
   return (
     <Modal title="Export" onClose={onClose}>

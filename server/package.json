@@ -1,12 +1,18 @@
 {
-  "name": "pagerig-converter",
+  "name": "pagerig-server",
   "private": true,
   "version": "0.1.0",
-  "description": "Converts Office documents to and from PDF for the PageRig web app, using LibreOffice.",
+  "description": "The PageRig server: Office conversion with LibreOffice, and signature requests.",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=22.5"
+  },
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test"
+  },
+  "dependencies": {
+    "nodemailer": "10.0.10",
+    "pdf-lib": "1.17.1"
   }
 }
