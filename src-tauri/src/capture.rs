@@ -67,6 +67,9 @@ fn run(browser: &PathBuf, work: &PathBuf, url: &str) -> Result<Vec<u8>, String> 
             "--no-default-browser-check",
             "--disable-extensions",
             "--mute-audio",
+            "--disable-dev-shm-usage",
+            "--password-store=basic",
+            "--use-mock-keychain",
             "--no-pdf-header-footer",
             "--run-all-compositor-stages-before-draw",
             "--virtual-time-budget=15000",
@@ -85,21 +88,31 @@ fn run(browser: &PathBuf, work: &PathBuf, url: &str) -> Result<Vec<u8>, String> 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Couldn't start the browser: {e}"))?;
+    // Some Chrome builds stay running after printing, so stop as soon as a
+    // complete PDF has been written rather than waiting for the browser to exit.
     let started = Instant::now();
     loop {
-        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
-            break;
+        let exited = child.try_wait().map_err(|e| e.to_string())?.is_some();
+        if let Some(pdf) = finished_pdf(&out) {
+            let _ = child.kill();
+            return Ok(pdf);
+        }
+        if exited {
+            return Err("The browser couldn't load this page.".into());
         }
         if started.elapsed() > TIMEOUT {
             let _ = child.kill();
             return Err("The page took too long to load.".into());
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(250));
     }
-    match std::fs::read(&out) {
-        Ok(pdf) if pdf.starts_with(b"%PDF") => Ok(pdf),
-        _ => Err("The browser couldn't load this page.".into()),
-    }
+}
+
+/// The printed file, once the browser has finished writing it.
+fn finished_pdf(path: &PathBuf) -> Option<Vec<u8>> {
+    let pdf = std::fs::read(path).ok()?;
+    let tail = String::from_utf8_lossy(&pdf[pdf.len().saturating_sub(32)..]).into_owned();
+    (pdf.starts_with(b"%PDF") && tail.trim_end().ends_with("%%EOF")).then_some(pdf)
 }
 
 /// Chrome, Edge, Chromium or Brave, from PAGERIG_CHROMIUM or where installers put them.

@@ -4,7 +4,7 @@
 // networks (localhost, 10.x, 192.168.x and so on) are refused unless
 // CAPTURE_ALLOW_PRIVATE=1, and the route needs the server's API key.
 
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { lookup } from "node:dns/promises";
@@ -15,6 +15,13 @@ import { slot } from "./convert.mjs";
 
 const TIMEOUT_MS = Number(process.env.TIMEOUT_S ?? 120) * 1000;
 const CANDIDATES = ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"];
+
+/** The printed file, once Chrome has finished writing it. */
+async function finishedPdf(path) {
+  const bytes = await readFile(path).catch(() => null);
+  if (!bytes || !/%%EOF\s*$/.test(bytes.subarray(-32).toString("latin1"))) return null;
+  return bytes;
+}
 
 export function chromiumPath(env = process.env) {
   if (env.CHROMIUM) return env.CHROMIUM;
@@ -81,6 +88,9 @@ async function run(url, chromium, noSandbox) {
       "--no-default-browser-check",
       "--disable-extensions",
       "--mute-audio",
+      "--disable-dev-shm-usage",
+      "--password-store=basic",
+      "--use-mock-keychain",
       `--user-data-dir=${join(work, "profile")}`,
       ...(noSandbox ? ["--no-sandbox"] : []),
       "--no-pdf-header-footer",
@@ -90,13 +100,34 @@ async function run(url, chromium, noSandbox) {
       `--print-to-pdf=${out}`,
       url,
     ];
-    await new Promise((resolve, reject) =>
-      execFile(chromium, args, { timeout: TIMEOUT_MS, killSignal: "SIGKILL" }, (err) => (err ? reject(err) : resolve())),
-    ).catch((err) => {
-      if (err.killed) throw new CaptureError(504, "The page took too long to load.");
-      if (!existsSync(out)) throw new CaptureError(422, "Chromium couldn't load this page.");
+    // Some Chrome builds stay running after printing, so stop as soon as a
+    // complete PDF has been written rather than waiting for Chrome to exit.
+    // Its own process group, so Chrome and all its helper processes can be stopped together.
+    const child = spawn(chromium, args, { stdio: "ignore", detached: process.platform !== "win32" });
+    const stop = () => {
+      try {
+        if (process.platform === "win32") child.kill("SIGKILL");
+        else process.kill(-child.pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    };
+    const exited = new Promise((resolve) => {
+      child.on("exit", () => resolve("exit"));
+      child.on("error", () => resolve("exit"));
     });
-    const pdf = await readFile(out).catch(() => null);
+    const deadline = Date.now() + TIMEOUT_MS;
+    let pdf = null;
+    try {
+      for (;;) {
+        const event = await Promise.race([exited, new Promise((r) => setTimeout(() => r("poll"), 250))]);
+        pdf = await finishedPdf(out);
+        if (pdf || event === "exit") break;
+        if (Date.now() > deadline) throw new CaptureError(504, "The page took too long to load.");
+      }
+    } finally {
+      stop();
+    }
     if (!pdf || pdf.subarray(0, 5).toString("latin1") !== "%PDF-") throw new CaptureError(422, "Chromium couldn't load this page.");
     return pdf;
   } finally {
