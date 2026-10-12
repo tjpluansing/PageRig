@@ -1,0 +1,12 @@
+{
+  "name": "pagerig-converter",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Converts Office documents to and from PDF for the PageRig web app, using LibreOffice.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  }
+}

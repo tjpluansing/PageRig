@@ -44,5 +44,5 @@ export default defineConfig({
   envPrefix: ["VITE_", "TAURI_ENV_"],
   // pdf.js and pdf-lib are large; the app is local-first so one bundle is fine.
   build: { target: "es2022", sourcemap: true, chunkSizeWarningLimit: 2000 },
-  test: { environment: "node" },
+  test: { environment: "node", include: ["src/**/*.test.ts"] },
 });
