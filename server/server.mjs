@@ -1,5 +1,6 @@
 // The PageRig server. It does three jobs, all optional:
 //   - converts Office documents to and from PDF with LibreOffice (/convert)
+//   - saves web pages as PDF with headless Chromium (/capture, needs the API key)
 //   - runs signature requests: stores documents, emails signers, keeps an
 //     audit trail and builds the signed PDF (/api, see sign/api.mjs)
 //   - serves the PageRig web app itself, when built into STATIC_DIR
@@ -22,12 +23,16 @@
 //   CONCURRENCY     conversions run at once (default 2)
 //   SWEEP_MINUTES   how often to send automatic reminders and expire requests (default 60)
 //   SOFFICE         path to LibreOffice's soffice (default: soffice on the PATH)
+//   CHROMIUM        path to Chromium or Chrome, for saving web pages as PDF (/capture)
+//   CHROMIUM_NO_SANDBOX  set to 1 where Chromium's sandbox can't run (as in the Docker image)
+//   CAPTURE_ALLOW_PRIVATE  set to 1 to allow saving pages on private networks (intranets)
 
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { CaptureError, capture, checkUrl, chromiumPath } from "./capture.mjs";
 import { TYPES, convert, plan } from "./convert.mjs";
 import { HttpError, SignService } from "./sign/api.mjs";
 import { createMailer } from "./sign/mail.mjs";
@@ -61,6 +66,7 @@ export function createApp({
   const origins = (env.ALLOWED_ORIGIN ?? "*").split(",").map((o) => o.trim());
   const staticDir = resolve(env.STATIC_DIR ?? join(here, "public"));
   const serveApp = existsSync(join(staticDir, "index.html"));
+  const chromium = chromiumPath(env);
   const signing = new SignService({
     store,
     mailer,
@@ -68,7 +74,10 @@ export function createApp({
     appUrl: env.APP_URL ?? publicUrl,
     trustProxy: env.TRUST_PROXY === "1",
     seal: env.SEAL_CERT ? readP12(readFileSync(env.SEAL_CERT), env.SEAL_CERT_PASSWORD ?? "") : null,
+    config: { capture: !!chromium && !!env.SIGN_API_KEY },
   });
+  const captureOptions = { chromium, noSandbox: env.CHROMIUM_NO_SANDBOX === "1" };
+  const allowPrivate = env.CAPTURE_ALLOW_PRIVATE === "1";
 
   const cors = (req, res) => {
     const origin = req.headers.origin;
@@ -88,6 +97,19 @@ export function createApp({
       if (req.method === "OPTIONS") return res.writeHead(204).end();
       if (url.pathname === "/health") return res.writeHead(200).end("ok");
       if (url.pathname === "/convert" && req.method === "POST") return await handleConvert(req, res, url);
+      if (url.pathname === "/capture" && req.method === "POST") {
+        signing.authorize(req);
+        let body;
+        try {
+          body = JSON.parse((await readBody(req, 64 * 1024)).toString("utf8") || "{}");
+        } catch (err) {
+          if (err instanceof HttpError) throw err;
+          return fail(res, 400, "The request wasn't valid JSON.");
+        }
+        const target = await checkUrl(body.url, { allowPrivate });
+        const pdf = await capture(target, captureOptions);
+        return res.writeHead(200, { "content-type": "application/pdf", "content-length": pdf.length }).end(pdf);
+      }
       if (url.pathname.startsWith("/api/")) {
         // Documents arrive base64-encoded in JSON, a third larger than the file.
         const handled = await signing.handle(req, res, url, () => readBody(req, Math.ceil(MAX_BYTES * 1.4)));
@@ -97,7 +119,7 @@ export function createApp({
       if (serveApp && req.method === "GET") return await serveStatic(res, staticDir, url.pathname);
       fail(res, 404, "Not found");
     } catch (err) {
-      if (err instanceof HttpError) return fail(res, err.status, err.message);
+      if (err instanceof HttpError || err instanceof CaptureError) return fail(res, err.status, err.message);
       console.error(`${req.method} ${url.pathname} failed:`, err);
       if (!res.headersSent) fail(res, 500, "Something went wrong on the server.");
     }
