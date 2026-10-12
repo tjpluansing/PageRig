@@ -17,6 +17,7 @@ import { pickFiles, readBrowserFiles, saveFile, saveFiles, type PickedFile } fro
 import { fileKind, imageToPdf, pdfToImages } from "./lib/convert";
 import { convertOffice } from "./lib/office";
 import { ExportDialog, type ExportChoice } from "./components/ExportDialog";
+import { pdfToSheets, xlsx } from "./lib/sheet";
 import { displaySize, findText, inspectPdf, pageFrame, registerSource, searchDoc, sourceFieldNames, type SearchHit } from "./lib/render";
 import { ALL_PERMISSIONS, isRestricted, unlockPdf } from "./lib/security";
 import {
@@ -535,6 +536,12 @@ export default function App() {
         const images = await pdfToImages(pdf, name, choice.format, choice.dpi);
         ok = images.length === 1 ? await saveFile(images[0].name, images[0].bytes) : await saveFiles(images, "Choose a folder for the page images", `${name}-images.zip`);
         if (ok) flash(`Exported ${images.length} image${images.length === 1 ? "" : "s"}`);
+      } else if (choice.format === "xlsx") {
+        setBusy("Converting to Excel…");
+        const sheets = await pdfToSheets(pdf);
+        if (sheets.every((s) => s.rows.length === 0)) throw new Error("There's no text to put in a spreadsheet. If this is a scan, run OCR first.");
+        ok = await saveFile(`${name}.xlsx`, xlsx(sheets));
+        if (ok) flash("Exported");
       } else {
         setBusy(choice.format === "docx" ? "Converting to Word…" : "Converting to PowerPoint…");
         const out = await convertOffice(pdf, `${name}.pdf`, choice.format);

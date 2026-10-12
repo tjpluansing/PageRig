@@ -2,7 +2,7 @@ import { useState } from "react";
 import { OFFICE_UNAVAILABLE, officeAvailable } from "../lib/office";
 import { Modal } from "./Dialogs";
 
-export type ExportFormat = "png" | "jpeg" | "docx" | "pptx";
+export type ExportFormat = "png" | "jpeg" | "docx" | "xlsx" | "pptx";
 
 export interface ExportChoice {
   format: ExportFormat;
@@ -15,6 +15,7 @@ const FORMATS: { value: ExportFormat; label: string; detail: string }[] = [
   { value: "png", label: "PNG images", detail: "One image per page. Sharp text and lines." },
   { value: "jpeg", label: "JPEG images", detail: "One image per page. Smaller files, best for photos and scans." },
   { value: "docx", label: "Word document (.docx)", detail: "Editable text. Complex layouts may shift." },
+  { value: "xlsx", label: "Excel workbook (.xlsx)", detail: "Tables become rows and columns, one sheet per page. Scans need OCR first." },
   { value: "pptx", label: "PowerPoint presentation (.pptx)", detail: "One slide per page." },
 ];
 
@@ -53,7 +54,7 @@ export function ExportDialog({ selectedCount, onExport, onClose }: Props) {
         ))}
       </fieldset>
 
-      {!office && (
+      {!office && format !== "xlsx" && (
         <fieldset className="protect-section">
           <legend className="strong">Resolution</legend>
           <select aria-label="Resolution" value={dpi} onChange={(e) => setDpi(Number(e.target.value))}>
