@@ -135,4 +135,8 @@ jobs:
           The PageRig server (web app, signature requests, Office conversion and web page capture) is at \`$image\`.
           See the README for its settings.
           EOF
-          gh release create "$GITHUB_REF_NAME" --draft --title "PageRig ${GITHUB_REF_NAME#v}" --notes-file notes.md --generate-notes installers/*
+          # Replace a draft left by an earlier failed run of this tag.
+          gh api "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.draft and .tag_name == \"$GITHUB_REF_NAME\") | .id" |
+            while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"; done
+          # The artifacts keep their build folders, so upload every file inside them.
+          find installers -type f -print0 | xargs -0 gh release create "$GITHUB_REF_NAME" --draft --title "PageRig ${GITHUB_REF_NAME#v}" --notes-file notes.md --generate-notes
