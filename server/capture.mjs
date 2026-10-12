@@ -94,7 +94,6 @@ async function run(url, chromium, noSandbox) {
       `--user-data-dir=${join(work, "profile")}`,
       ...(noSandbox ? ["--no-sandbox"] : []),
       "--no-pdf-header-footer",
-      "--run-all-compositor-stages-before-draw",
       // Give scripts and lazy images time to load before printing.
       "--virtual-time-budget=15000",
       `--print-to-pdf=${out}`,
@@ -103,7 +102,11 @@ async function run(url, chromium, noSandbox) {
     // Some Chrome builds stay running after printing, so stop as soon as a
     // complete PDF has been written rather than waiting for Chrome to exit.
     // Its own process group, so Chrome and all its helper processes can be stopped together.
-    const child = spawn(chromium, args, { stdio: "ignore", detached: process.platform !== "win32" });
+    const child = spawn(chromium, args, { stdio: ["ignore", "ignore", "pipe"], detached: process.platform !== "win32" });
+    // Chrome's own messages, to explain a failure in the server log.
+    let stderr = "";
+    child.stderr.on("data", (d) => (stderr = (stderr + d).slice(-2000)));
+    child.stderr.on("error", () => {});
     const stop = () => {
       try {
         if (process.platform === "win32") child.kill("SIGKILL");
@@ -123,7 +126,10 @@ async function run(url, chromium, noSandbox) {
         const event = await Promise.race([exited, new Promise((r) => setTimeout(() => r("poll"), 250))]);
         pdf = await finishedPdf(out);
         if (pdf || event === "exit") break;
-        if (Date.now() > deadline) throw new CaptureError(504, "The page took too long to load.");
+        if (Date.now() > deadline) {
+          console.error(`Capturing ${url} timed out. Chromium said:\n${stderr}`);
+          throw new CaptureError(504, "The page took too long to load.");
+        }
       }
     } finally {
       stop();

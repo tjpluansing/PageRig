@@ -26,7 +26,7 @@ jobs:
           set +e
           npm test 2>&1 | tee test.log
           status=${PIPESTATUS[0]}
-          [ $status -ne 0 ] && grep -E "not ok|error:|Error|actual|expected" test.log | head -30 | sed 's/^ */::error::/'
+          [ $status -ne 0 ] && grep -iE "not ok|error|actual|expected|chromium" test.log | head -40 | sed 's/^ */::error::/'
           exit $status
       - run: npm run build
 

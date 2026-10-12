@@ -60,6 +60,7 @@ describe("/capture", () => {
 
   test("prints the page to a PDF", { skip: !CHROMIUM && "Chromium isn't installed" }, async () => {
     const res = await post({ url: siteUrl });
+    if (res.status !== 200) console.log(`Error detail: ${await res.clone().text()}`);
     assert.equal(res.status, 200, await res.clone().text());
     assert.equal(res.headers.get("content-type"), "application/pdf");
     const pdf = await PDFDocument.load(new Uint8Array(await res.arrayBuffer()));
