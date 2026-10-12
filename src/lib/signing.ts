@@ -134,6 +134,8 @@ export interface SendRequest {
   message?: string;
   ordered: boolean;
   expiresDays?: number | null;
+  /** Email anyone yet to sign again every this many days; null for no automatic reminders. */
+  remindDays?: number | null;
   signers: Recipient[];
 }
 
@@ -147,6 +149,7 @@ export interface EnvelopeSummary {
   createdAt: string;
   completedAt: string | null;
   expiresAt: string | null;
+  remindDays: number | null;
   ordered: boolean;
   signers: { name: string; email: string; status: SignerStatus; viewedAt: string | null; signedAt: string | null; declineReason: string | null }[];
 }

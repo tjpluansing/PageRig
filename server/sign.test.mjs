@@ -150,6 +150,32 @@ describe("signature requests", () => {
     assert.equal((await call("POST", "/api/verify", tampered, { auth: false, raw: true })).data.match, false);
   });
 
+  test("automatic reminders go out every remindDays, up to a limit", async () => {
+    const bad = await call("POST", "/api/envelopes", { title: "X", pdf: await contract(1), signers: [{ name: "Di", email: "di@example.com" }], fields: [FIELDS[0]], remindDays: 90 });
+    assert.match(bad.data, /every 1 to 30 days/);
+
+    const { id } = (
+      await call("POST", "/api/envelopes", { title: "Lease", pdf: await contract(1), signers: [{ name: "Di", email: "di@example.com" }], fields: [FIELDS[0]], remindDays: 2 })
+    ).data;
+    assert.equal((await call("GET", `/api/envelopes/${id}`)).data.remindDays, 2);
+    const first = lastLinkTo("di@example.com");
+    const day = 86_400_000;
+    const sweep = async (days) => (await app.signing.sweep(Date.now() + days * day)).reminded;
+
+    assert.equal(await sweep(1), 0);
+    assert.equal(await sweep(3), 1);
+    assert.match(mails().at(-1).subject, /^Reminder: /);
+    const second = lastLinkTo("di@example.com");
+    assert.notEqual(first, second);
+    assert.equal((await call("GET", `/api/sign/${first}`, null, { auth: false })).status, 404);
+    // The clock restarts from the reminder just sent.
+    assert.equal(await sweep(1), 0);
+    for (let i = 0; i < 10; i++) await sweep(3 * (i + 2));
+    const events = (await call("GET", `/api/envelopes/${id}`)).data.events.filter((e) => e.kind === "reminded");
+    assert.equal(events.length, 5);
+    assert.equal(events[0].detail, "automatic");
+  });
+
   test("reminders replace the link, and requests can be declined or cancelled", async () => {
     const make = async () =>
       (
