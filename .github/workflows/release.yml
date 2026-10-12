@@ -73,7 +73,11 @@ jobs:
       - id: names
         run: |
           image="ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/pagerig"
-          echo "tags=$image:${GITHUB_REF_NAME#v},$image:latest" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "tags=$image:${GITHUB_REF_NAME#v},$image:latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=$image:test" >> "$GITHUB_OUTPUT"
+          fi
       - name: Build the server image
         uses: docker/build-push-action@v6
         with:
