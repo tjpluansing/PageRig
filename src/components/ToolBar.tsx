@@ -3,6 +3,8 @@ import type { PageObject, TextObject } from "../lib/objects";
 
 export type Tool =
   | "select"
+  | "edit-text"
+  | "edit-image"
   | "text"
   | "check"
   | "cross"
@@ -42,10 +44,11 @@ interface Props {
   selected: PageObject | null;
   onChange: (patch: Partial<PageObject>) => void;
   onDelete: () => void;
+  /** Run OCR on the selected (or current) pages. */
+  onOcr?: () => void;
 }
 
 const TOOLS: { tool: Tool; label: string; title: string }[] = [
-  { tool: "select", label: "Select", title: "Select, move and fill in (Esc)" },
   { tool: "text", label: "Text", title: "Add text" },
   { tool: "check", label: "✔", title: "Check mark" },
   { tool: "cross", label: "✘", title: "Cross" },
@@ -63,11 +66,28 @@ const FIELD_TOOLS: { tool: Tool; label: string }[] = [
 ];
 
 /** Fill & sign and form-building tools, plus settings for the selected object. */
-export function ToolBar({ tool, onTool, stamp, onStamp, hasSignature, onRedoSignature, selected, onChange, onDelete }: Props) {
+export function ToolBar({ tool, onTool, stamp, onStamp, hasSignature, onRedoSignature, selected, onChange, onDelete, onOcr }: Props) {
   const [stampMenu, setStampMenu] = useState(false);
 
   return (
-    <div className="toolbar tools" role="toolbar" aria-label="Fill and sign">
+    <div className="toolbar tools" role="toolbar" aria-label="Edit, fill and sign">
+      <button className={tool === "select" ? "active" : ""} title="Select, move and fill in (Esc)" onClick={() => onTool("select")}>
+        Select
+      </button>
+      <span className="sep" />
+      <span className="group-label">Edit</span>
+      <button className={tool === "edit-text" ? "active" : ""} title="Click existing text to change it" onClick={() => onTool("edit-text")}>
+        Edit text
+      </button>
+      <button className={tool === "edit-image" ? "active" : ""} title="Replace or remove an image" onClick={() => onTool("edit-image")}>
+        Edit image
+      </button>
+      {onOcr && (
+        <button title="Recognise text on scanned pages so it can be searched and edited" onClick={onOcr}>
+          OCR
+        </button>
+      )}
+      <span className="sep" />
       <span className="group-label">Fill &amp; sign</span>
       {TOOLS.map((t) => (
         <button key={t.tool} className={tool === t.tool ? "active" : ""} title={t.title} onClick={() => onTool(t.tool)}>
@@ -126,6 +146,8 @@ export function ToolBar({ tool, onTool, stamp, onStamp, hasSignature, onRedoSign
 
 function Hint({ tool, stamp, hasSignature, onRedoSignature }: Pick<Props, "tool" | "stamp" | "hasSignature" | "onRedoSignature">) {
   if (tool === "select") return null;
+  if (tool === "edit-text") return <span className="hint-inline">Click any text to change it. Scanned page? Run OCR first.</span>;
+  if (tool === "edit-image") return <span className="hint-inline">Hover over an image to replace or remove it.</span>;
   if (tool === "signature" || tool === "initials") {
     return (
       <span className="hint-inline">
@@ -156,6 +178,16 @@ function Properties({ obj, onChange, onDelete }: { obj: PageObject; onChange: (p
           </button>
         </>
       )}
+      {obj.kind === "rect" &&
+        ["#ffffff", ...COLORS].map((c) => (
+          <button
+            key={c}
+            className={`swatch${obj.fill === c ? " active" : ""}`}
+            style={{ background: c }}
+            aria-label={`Fill ${c}`}
+            onClick={() => onChange({ fill: c })}
+          />
+        ))}
       {(obj.kind === "text" || obj.kind === "mark") &&
         COLORS.map((c) => (
           <button

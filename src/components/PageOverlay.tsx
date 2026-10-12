@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import type { DocState, PageRef } from "../lib/document";
 import {
+  FONT_CSS,
   LINE_HEIGHT,
   MARK_GLYPHS,
   TEXT_PAD,
@@ -10,15 +11,18 @@ import {
   screenAngle,
   toDisplay,
   type FieldValue,
+  type FontKey,
   type PageFrame,
   type PageObject,
   type TextObject,
 } from "../lib/objects";
-import { formWidgets, pageFrame, type FormWidget } from "../lib/render";
+import { formWidgets, imageRegions, pageFrame, textRuns, type FormWidget, type ImageRegion, type TextRun } from "../lib/render";
+
+export type OverlayMode = "select" | "place" | "edit-text" | "edit-image";
 
 export interface OverlayHandlers {
-  /** A placement tool is active; clicks on the page call onPlace. */
-  placing: boolean;
+  /** "place": clicks on the page call onPlace. "edit-*": existing text or images can be picked. */
+  mode: OverlayMode;
   selectedId: string | null;
   editingId: string | null;
   onSelect: (pageId: string, objId: string | null) => void;
@@ -27,6 +31,8 @@ export interface OverlayHandlers {
   onChange: (pageId: string, objId: string, patch: Partial<PageObject>) => void;
   onRemove: (pageId: string, objId: string) => void;
   onFieldValue: (sourceId: string, name: string, value: FieldValue) => void;
+  onEditRun: (pageId: string, run: TextRun) => void;
+  onEditImage: (pageId: string, region: ImageRegion, action: "replace" | "remove") => void;
 }
 
 interface Props {
@@ -46,20 +52,20 @@ export function PageOverlay({ doc, page, scale, handlers }: Props) {
 
   const onBackgroundPointerDown = (e: PointerEvent<HTMLDivElement>) => {
     if (!handlers || e.target !== e.currentTarget) return;
-    if (handlers.placing) {
+    if (handlers.mode === "place") {
       // Keep focus where it lands next (e.g. the new text box) instead of on the page.
       e.preventDefault();
       const rect = e.currentTarget.getBoundingClientRect();
       const p = fromDisplay(frame, (e.clientX - rect.left) / scale, (e.clientY - rect.top) / scale);
       handlers.onPlace(page.id, p.x, p.y);
-    } else {
+    } else if (handlers.mode === "select") {
       handlers.onSelect(page.id, null);
     }
   };
 
   return (
     <div
-      className={`overlay${interactive ? " interactive" : ""}${handlers?.placing ? " placing" : ""}`}
+      className={`overlay${interactive ? " interactive" : ""}${handlers && handlers.mode !== "select" ? " placing" : ""}${handlers?.mode === "place" ? " crosshair" : ""}`}
       onPointerDown={onBackgroundPointerDown}
     >
       {widgets.map((w) => (
@@ -68,6 +74,8 @@ export function PageOverlay({ doc, page, scale, handlers }: Props) {
       {(page.objects ?? []).map((o) => (
         <ObjectView key={o.id} page={page} obj={o} frame={frame} scale={scale} handlers={handlers} />
       ))}
+      {handlers?.mode === "edit-text" && <RunTargets doc={doc} page={page} frame={frame} scale={scale} handlers={handlers} />}
+      {handlers?.mode === "edit-image" && <ImageTargets doc={doc} page={page} frame={frame} scale={scale} handlers={handlers} />}
     </div>
   );
 }
@@ -120,7 +128,7 @@ function ObjectView({ page, obj, frame, scale: s, handlers }: ObjectProps) {
   };
 
   const start = (kind: Gesture["kind"]) => (e: PointerEvent) => {
-    if (!handlers || handlers.placing || editing) return;
+    if (!handlers || handlers.mode !== "select" || editing) return;
     e.stopPropagation();
     handlers.onSelect(page.id, obj.id);
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
@@ -171,6 +179,8 @@ function ObjectBody({ obj, scale: s, editing, page, handlers }: { obj: PageObjec
   switch (obj.kind) {
     case "text": {
       const style: CSSProperties = {
+        fontFamily: FONT_CSS[obj.font ?? "helvetica"],
+        fontWeight: obj.bold || obj.stamp ? 700 : 400,
         fontSize: obj.fontSize * s,
         lineHeight: LINE_HEIGHT,
         padding: TEXT_PAD * s,
@@ -194,6 +204,8 @@ function ObjectBody({ obj, scale: s, editing, page, handlers }: { obj: PageObjec
           {MARK_GLYPHS[obj.mark]}
         </span>
       );
+    case "rect":
+      return <div className="obj-rect-body" style={{ background: obj.fill }} />;
     case "field":
       return (
         <div className="obj-field-body" style={{ fontSize: Math.max(6, Math.min(11, obj.h * 0.55) * s) }}>
@@ -231,16 +243,16 @@ function TextEditor({ obj, style, onDone }: { obj: TextObject; style: CSSPropert
 
 let measureCtx: CanvasRenderingContext2D | null = null;
 /** Width of a line of text in points at the given font size (canvas px == pt here). */
-export function textWidth(text: string, fontSize: number, bold = false): number {
+export function textWidth(text: string, fontSize: number, bold = false, font: FontKey = "helvetica"): number {
   measureCtx ??= document.createElement("canvas").getContext("2d");
   if (!measureCtx) return text.length * fontSize * 0.55;
-  measureCtx.font = `${bold ? "bold " : ""}${fontSize}px Helvetica, Arial, sans-serif`;
+  measureCtx.font = `${bold ? "bold " : ""}${fontSize}px ${FONT_CSS[font]}`;
   return measureCtx.measureText(text).width;
 }
 
-export function sizeText(obj: Pick<TextObject, "text" | "fontSize" | "stamp">) {
+export function sizeText(obj: Pick<TextObject, "text" | "fontSize" | "stamp" | "font" | "bold">) {
   const text = obj.stamp ? obj.text.toUpperCase() : obj.text;
-  const size = measureText(text, obj.fontSize, (l) => textWidth(l, obj.fontSize, obj.stamp));
+  const size = measureText(text, obj.fontSize, (l) => textWidth(l, obj.fontSize, obj.stamp || obj.bold, obj.font));
   return obj.stamp ? { w: size.w + obj.fontSize, h: size.h + obj.fontSize * 0.4 } : size;
 }
 
@@ -301,7 +313,7 @@ function Widget({ doc, page, widget: w, frame, scale: s, handlers }: WidgetProps
   const fontSize = Math.max(6, (w.fontSize || Math.min(12, w.h * 0.65)) * s);
   const style: CSSProperties = { left, top, width, height, fontSize };
   const set = (v: FieldValue) => page.sourceId && handlers?.onFieldValue(page.sourceId, w.name, v);
-  const disabled = !handlers || w.readOnly || handlers.placing;
+  const disabled = !handlers || w.readOnly || handlers.mode !== "select";
   const common = { className: `field field-${w.type}`, style, disabled, title: w.name, "aria-label": w.name };
 
   switch (w.type) {
@@ -338,4 +350,80 @@ function Widget({ doc, page, widget: w, frame, scale: s, handlers }: WidgetProps
     default:
       return null;
   }
+}
+
+// ---- Edit text / edit image targets ---------------------------------------
+
+interface TargetProps {
+  doc: DocState;
+  page: PageRef;
+  frame: PageFrame;
+  scale: number;
+  handlers: OverlayHandlers;
+}
+
+/** Axis-aligned screen box for a rectangle in unrotated page space. */
+function screenBox(frame: PageFrame, s: number, r: { x: number; y: number; w: number; h: number }): CSSProperties {
+  const a = toDisplay(frame, r.x, r.y);
+  const b = toDisplay(frame, r.x + r.w, r.y + r.h);
+  return {
+    left: Math.min(a.x, b.x) * s,
+    top: Math.min(a.y, b.y) * s,
+    width: Math.abs(b.x - a.x) * s,
+    height: Math.abs(b.y - a.y) * s,
+  };
+}
+
+function useAsync<T>(load: () => Promise<T>, deps: unknown[], initial: T): T {
+  const [value, setValue] = useState<T>(initial);
+  useEffect(() => {
+    let live = true;
+    load()
+      .then((v) => live && setValue(v))
+      .catch(() => live && setValue(initial));
+    return () => {
+      live = false;
+    };
+  }, deps);
+  return value;
+}
+
+function RunTargets({ doc, page, frame, scale, handlers }: TargetProps) {
+  const source = page.sourceId ? doc.sources[page.sourceId] : null;
+  const runs = useAsync(() => textRuns(doc, page), [source, page.sourceIndex, page.ocr], [] as TextRun[]);
+  return (
+    <>
+      {runs.map((r, i) => (
+        <button
+          key={i}
+          className="edit-target"
+          style={screenBox(frame, scale, r)}
+          title={r.text}
+          aria-label={`Edit “${r.text}”`}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            handlers.onEditRun(page.id, r);
+          }}
+        />
+      ))}
+    </>
+  );
+}
+
+function ImageTargets({ doc, page, frame, scale, handlers }: TargetProps) {
+  const source = page.sourceId ? doc.sources[page.sourceId] : null;
+  const regions = useAsync(() => imageRegions(doc, page), [source, page.sourceIndex], [] as ImageRegion[]);
+  return (
+    <>
+      {regions.map((r, i) => (
+        <div key={i} className="edit-target image-target" style={screenBox(frame, scale, r)} onPointerDown={(e) => e.stopPropagation()}>
+          <span className="image-actions">
+            <button onClick={() => handlers.onEditImage(page.id, r, "replace")}>Replace</button>
+            <button onClick={() => handlers.onEditImage(page.id, r, "remove")}>Remove</button>
+          </span>
+        </div>
+      ))}
+    </>
+  );
 }

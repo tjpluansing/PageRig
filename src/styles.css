@@ -298,7 +298,7 @@ mark { background: #fde68a; color: #111; border-radius: 2px; }
 
 .overlay { position: absolute; inset: 0; pointer-events: none; }
 .overlay.interactive { pointer-events: auto; }
-.overlay.placing { cursor: crosshair; }
+.overlay.crosshair { cursor: crosshair; }
 .overlay.placing .obj, .overlay.placing .field { pointer-events: none; }
 
 .obj { position: absolute; transform-origin: center; user-select: none; }
@@ -402,3 +402,19 @@ input.field[type="checkbox"], input.field[type="radio"] { accent-color: #1d4ed8;
 .sig-upload img { max-height: 120px; max-width: 100%; object-fit: contain; background: #fff; border: 1px solid var(--border); border-radius: 6px; }
 .check-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--muted); }
 .thumb .field { appearance: none; background: transparent; }
+
+.obj-rect-body { width: 100%; height: 100%; }
+.edit-target {
+  position: absolute;
+  padding: 0;
+  border: 1px dashed rgb(37 99 235 / 0.55);
+  border-radius: 2px;
+  background: rgb(37 99 235 / 0.06);
+  cursor: text;
+}
+.edit-target:hover { background: rgb(37 99 235 / 0.16); border-style: solid; }
+.image-target { cursor: default; }
+.image-actions { position: absolute; top: 6px; right: 6px; display: none; gap: 4px; }
+.image-target:hover .image-actions,
+.image-target:focus-within .image-actions { display: flex; }
+.image-actions button { font-size: 12px; padding: 3px 8px; box-shadow: 0 1px 4px rgb(0 0 0 / 0.2); }

@@ -1,9 +1,9 @@
 // The legacy build polyfills very new JS APIs that the desktop webviews
 // (WebKitGTK on Linux, older WKWebView on macOS) don't have yet.
-import { AnnotationMode, getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { AnnotationMode, getDocument, GlobalWorkerOptions, OPS, type PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import { normalizeRotation, type DocState, type PageRef, type Source } from "./document";
-import type { PageFrame } from "./objects";
+import type { FontKey, PageFrame } from "./objects";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -108,24 +108,8 @@ export async function renderPage(
   const px = scale * dpr;
 
   // 1. Render the unrotated page.
-  const raw = document.createElement("canvas");
-  raw.width = Math.ceil(info.width * px);
-  raw.height = Math.ceil(info.height * px);
-  const rawCtx = raw.getContext("2d")!;
-  rawCtx.fillStyle = "#fff";
-  rawCtx.fillRect(0, 0, raw.width, raw.height);
-
-  if (ref.sourceId !== null) {
-    const source = doc.sources[ref.sourceId];
-    if (!source) return;
-    const { pdf } = await loaded(source);
-    if (isCancelled()) return;
-    const page = await pdf.getPage(ref.sourceIndex + 1);
-    const viewport = page.getViewport({ scale: px, rotation: 0 });
-    // Form fields are drawn by the HTML overlay so they can be filled in.
-    await page.render({ canvas: raw, viewport, annotationMode: AnnotationMode.ENABLE_FORMS }).promise;
-    if (isCancelled()) return;
-  }
+  const raw = await renderUnrotated(doc, ref, px, isCancelled);
+  if (!raw) return;
 
   // 2. Copy the cropped region, rotated, into the target canvas.
   const c = ref.crop ?? { top: 0, right: 0, bottom: 0, left: 0 };
@@ -148,8 +132,45 @@ export async function renderPage(
   ctx.restore();
 }
 
+/**
+ * Render the whole page without crop or rotation at `px` pixels per point,
+ * on a white background. Returns null if cancelled or the source is gone.
+ */
+export async function renderUnrotated(
+  doc: DocState,
+  ref: PageRef,
+  px: number,
+  isCancelled: () => boolean = () => false,
+): Promise<HTMLCanvasElement | null> {
+  const info = baseInfo(ref);
+  const raw = document.createElement("canvas");
+  raw.width = Math.ceil(info.width * px);
+  raw.height = Math.ceil(info.height * px);
+  const rawCtx = raw.getContext("2d")!;
+  rawCtx.fillStyle = "#fff";
+  rawCtx.fillRect(0, 0, raw.width, raw.height);
+
+  if (ref.sourceId !== null) {
+    const source = doc.sources[ref.sourceId];
+    if (!source) return null;
+    const { pdf } = await loaded(source);
+    if (isCancelled()) return null;
+    const page = await pdf.getPage(ref.sourceIndex + 1);
+    const viewport = page.getViewport({ scale: px, rotation: 0 });
+    // Form fields are drawn by the HTML overlay so they can be filled in.
+    await page.render({ canvas: raw, viewport, annotationMode: AnnotationMode.ENABLE_FORMS }).promise;
+    if (isCancelled()) return null;
+  }
+  return raw;
+}
+
 /** Plain text of one page, cached. */
 export async function pageText(doc: DocState, ref: PageRef): Promise<string> {
+  const ocr = ref.ocr?.map((l) => l.text).join("\n") ?? "";
+  return [await fileText(doc, ref), ocr].filter(Boolean).join("\n");
+}
+
+async function fileText(doc: DocState, ref: PageRef): Promise<string> {
   if (ref.sourceId === null) return "";
   const source = doc.sources[ref.sourceId];
   if (!source) return "";
@@ -299,4 +320,148 @@ async function readWidgets(pdf: PDFDocumentProxy, index: number): Promise<FormWi
     }
   }
   return widgets;
+}
+
+// ---- Editable text and images ----------------------------------------------
+
+/** A run of text on the page that can be replaced. Unrotated page space, top-left origin. */
+export interface TextRun {
+  text: string;
+  x: number;
+  /** Top of the run's box. */
+  y: number;
+  w: number;
+  h: number;
+  baseline: number;
+  fontSize: number;
+  font: FontKey;
+  bold: boolean;
+}
+
+/** Text runs from the file plus any OCR lines, for the Edit text tool. */
+export async function textRuns(doc: DocState, ref: PageRef): Promise<TextRun[]> {
+  const ocr: TextRun[] = (ref.ocr ?? []).map((l) => ({
+    text: l.text,
+    x: l.x,
+    y: l.y,
+    w: l.w,
+    h: l.h,
+    baseline: l.baseline,
+    fontSize: Math.round((l.baseline - l.y) / 0.75),
+    font: "helvetica",
+    bold: false,
+  }));
+  if (ref.sourceId === null) return ocr;
+  const source = doc.sources[ref.sourceId];
+  if (!source) return ocr;
+  const { pdf } = await loaded(source);
+  const page = await pdf.getPage(ref.sourceIndex + 1);
+  const [vx0, , , vy1] = page.view;
+  const content = await page.getTextContent();
+  const runs: TextRun[] = [];
+  for (const item of content.items) {
+    if (!("str" in item) || !item.str.trim()) continue;
+    const [a, b, c, d, e, f] = item.transform as number[];
+    // Only horizontal text can be replaced in place.
+    if (Math.abs(b) > 0.01 || Math.abs(c) > 0.01 || a <= 0) continue;
+    const fontSize = Math.abs(d) || item.height;
+    const style = content.styles[item.fontName] as { fontFamily?: string } | undefined;
+    const family = `${style?.fontFamily ?? ""} ${item.fontName}`.toLowerCase();
+    const font: FontKey = /mono|courier/.test(family) ? "courier" : /serif|times|roman|georgia/.test(family) && !/sans/.test(family) ? "times" : "helvetica";
+    const baseline = vy1 - f;
+    const run: TextRun = {
+      text: item.str,
+      x: e - vx0,
+      y: baseline - fontSize * 0.85,
+      w: item.width,
+      h: fontSize * 1.1,
+      baseline,
+      fontSize: Math.round(fontSize * 10) / 10,
+      font,
+      bold: /bold|black|heavy/.test(family),
+    };
+    // Join pieces of the same line that pdf.js split up.
+    const prev = runs[runs.length - 1];
+    if (
+      prev &&
+      Math.abs(prev.baseline - run.baseline) < 0.5 &&
+      Math.abs(prev.fontSize - run.fontSize) < 0.5 &&
+      run.x >= prev.x + prev.w - 1 &&
+      run.x - (prev.x + prev.w) < run.fontSize * 0.4
+    ) {
+      const gap = run.x - (prev.x + prev.w) > run.fontSize * 0.15 && !prev.text.endsWith(" ") ? " " : "";
+      prev.text += gap + run.text;
+      prev.w = run.x + run.w - prev.x;
+      continue;
+    }
+    runs.push(run);
+  }
+  return [...runs, ...ocr];
+}
+
+/** Where an image is painted on the page (bounding box, unrotated page space, top-left origin). */
+export interface ImageRegion {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+type Matrix = [number, number, number, number, number, number];
+const multiply = (m: Matrix, n: Matrix): Matrix => [
+  m[0] * n[0] + m[2] * n[1],
+  m[1] * n[0] + m[3] * n[1],
+  m[0] * n[2] + m[2] * n[3],
+  m[1] * n[2] + m[3] * n[3],
+  m[0] * n[4] + m[2] * n[5] + m[4],
+  m[1] * n[4] + m[3] * n[5] + m[5],
+];
+
+const IMAGE_OPS = new Set([
+  OPS.paintImageXObject,
+  OPS.paintInlineImageXObject,
+  OPS.paintImageMaskXObject,
+  OPS.paintImageXObjectRepeat,
+]);
+
+/** Images drawn on a page, found by replaying the transform stack of its operator list. */
+export async function imageRegions(doc: DocState, ref: PageRef): Promise<ImageRegion[]> {
+  if (ref.sourceId === null) return [];
+  const source = doc.sources[ref.sourceId];
+  if (!source) return [];
+  const { pdf } = await loaded(source);
+  const page = await pdf.getPage(ref.sourceIndex + 1);
+  const [vx0, vy0, vx1, vy1] = page.view;
+  const ops = await page.getOperatorList();
+  const regions: ImageRegion[] = [];
+  let ctm: Matrix = [1, 0, 0, 1, 0, 0];
+  const stack: Matrix[] = [];
+  for (let i = 0; i < ops.fnArray.length; i++) {
+    const fn = ops.fnArray[i];
+    const args = ops.argsArray[i];
+    if (fn === OPS.save) stack.push(ctm);
+    else if (fn === OPS.restore) ctm = stack.pop() ?? ctm;
+    else if (fn === OPS.transform) ctm = multiply(ctm, args as Matrix);
+    else if (fn === OPS.paintFormXObjectBegin) {
+      stack.push(ctm);
+      if (Array.isArray(args?.[0]) && args[0].length === 6) ctm = multiply(ctm, args[0] as Matrix);
+    } else if (fn === OPS.paintFormXObjectEnd) ctm = stack.pop() ?? ctm;
+    else if (IMAGE_OPS.has(fn)) {
+      const corners = [
+        [0, 0],
+        [1, 0],
+        [0, 1],
+        [1, 1],
+      ].map(([u, v]) => [ctm[0] * u + ctm[2] * v + ctm[4], ctm[1] * u + ctm[3] * v + ctm[5]]);
+      const xs = corners.map((p) => p[0]);
+      const ys = corners.map((p) => p[1]);
+      const x0 = Math.max(vx0, Math.min(...xs));
+      const x1 = Math.min(vx1, Math.max(...xs));
+      const y0 = Math.max(vy0, Math.min(...ys));
+      const y1 = Math.min(vy1, Math.max(...ys));
+      if (x1 - x0 < 4 || y1 - y0 < 4) continue;
+      regions.push({ x: x0 - vx0, y: vy1 - y1, w: x1 - x0, h: y1 - y0 });
+    }
+  }
+  return regions;
 }

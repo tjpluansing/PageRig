@@ -21,11 +21,22 @@ interface Base {
   rot: Rotation;
 }
 
+export type FontKey = "helvetica" | "times" | "courier";
+
+export const FONT_CSS: Record<FontKey, string> = {
+  helvetica: "Helvetica, Arial, sans-serif",
+  times: '"Times New Roman", Times, serif',
+  courier: '"Courier New", Courier, monospace',
+};
+
 export interface TextObject extends Base {
   kind: "text";
   text: string;
   fontSize: number;
   color: string;
+  /** Defaults to Helvetica. Edited text picks the closest match to the original. */
+  font?: FontKey;
+  bold?: boolean;
   /** Drawn as a bordered, bold, uppercase stamp. */
   stamp?: boolean;
 }
@@ -54,7 +65,24 @@ export interface FieldObject extends Base {
   options?: string[];
 }
 
-export type PageObject = TextObject | ImageObject | MarkObject | FieldObject;
+/** A filled rectangle, used to cover original text or images that were edited or removed. */
+export interface RectObject extends Base {
+  kind: "rect";
+  fill: string;
+}
+
+export type PageObject = TextObject | ImageObject | MarkObject | FieldObject | RectObject;
+
+/** A line of text found by OCR on a scanned page, in unrotated page space (points, top-left origin). */
+export interface OcrLine {
+  text: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Baseline, measured from the top of the page. */
+  baseline: number;
+}
 
 export type FieldValue = string | boolean;
 

@@ -22,8 +22,11 @@ import {
   TEXT_PAD,
   type FieldObject,
   type ImageObject,
+  type FontKey,
   type MarkObject,
+  type OcrLine,
   type PageObject,
+  type RectObject,
   type TextObject,
 } from "./objects";
 
@@ -49,6 +52,7 @@ export async function exportPdf(doc: DocState, pages: PageRef[] = doc.pages): Pr
       out.addPage(page);
       ctx.keepFormFields(page, src);
     }
+    if (ref.ocr?.length) await ctx.drawOcr(page, ref.ocr);
     for (const obj of ref.objects ?? []) await ctx.draw(page, obj);
     applyRotationAndCrop(page, ref);
   }
@@ -186,7 +190,28 @@ class ExportContext {
         return this.drawMark(page, obj, place);
       case "field":
         return this.addField(page, obj, place);
+      case "rect":
+        return this.drawRect(page, obj, place);
     }
+  }
+
+  /** OCR text goes in as an invisible layer, so scans become searchable and selectable. */
+  async drawOcr(page: PDFPage, lines: OcrLine[]) {
+    const font = await this.font(StandardFonts.Helvetica);
+    const box = page.getCropBox();
+    for (const line of lines) {
+      const text = encodable(font, line.text);
+      const natural = font.widthOfTextAtSize(text, 10);
+      if (!natural) continue;
+      // Size the text so its width matches the scanned words, which keeps selection aligned.
+      const size = Math.max(1, Math.min(line.h * 1.5, (10 * line.w) / natural));
+      page.drawText(text, { x: box.x + line.x, y: box.y + box.height - line.baseline, size, font, opacity: 0 });
+    }
+  }
+
+  private drawRect(page: PDFPage, obj: RectObject, place: Placer) {
+    const ll = place(0, obj.h);
+    page.drawRectangle({ x: ll.x, y: ll.y, width: obj.w, height: obj.h, rotate: degrees(obj.rot), color: parseColor(obj.fill) });
   }
 
   private async font(name: StandardFonts) {
@@ -199,7 +224,7 @@ class ExportContext {
   }
 
   private async drawText(page: PDFPage, obj: TextObject, place: Placer) {
-    const font = await this.font(obj.stamp ? StandardFonts.HelveticaBold : StandardFonts.Helvetica);
+    const font = await this.font(obj.stamp ? StandardFonts.HelveticaBold : standardFont(obj.font, obj.bold));
     const color = parseColor(obj.color);
     if (obj.stamp) {
       const ll = place(0, obj.h);
@@ -327,4 +352,10 @@ function decodeDataUrl(url: string): { bytes: Uint8Array; mime: string } {
   const bytes = new Uint8Array(data.length);
   for (let i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i);
   return { bytes, mime: m[1] };
+}
+
+function standardFont(font: FontKey = "helvetica", bold = false): StandardFonts {
+  if (font === "times") return bold ? StandardFonts.TimesRomanBold : StandardFonts.TimesRoman;
+  if (font === "courier") return bold ? StandardFonts.CourierBold : StandardFonts.Courier;
+  return bold ? StandardFonts.HelveticaBold : StandardFonts.Helvetica;
 }

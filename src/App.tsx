@@ -9,6 +9,7 @@ import {
   movePages,
   newId,
   rotatePages,
+  setOcr,
   type DocState,
   type Source,
 } from "./lib/document";
@@ -27,8 +28,11 @@ import {
   type ImageObject,
   type MarkObject,
   type PageObject,
+  type RectObject,
   type TextObject,
+  TEXT_PAD,
 } from "./lib/objects";
+import { recognizePage } from "./lib/ocr";
 import { useHistory } from "./lib/useHistory";
 import { Thumbnails } from "./components/Thumbnails";
 import { PageCanvas } from "./components/PageCanvas";
@@ -144,16 +148,10 @@ export default function App() {
       return;
     }
     if (next === "image") {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = "image/png,image/jpeg,image/webp";
-      input.onchange = async () => {
-        const url = await readImageFile(input.files?.[0]).catch(() => null);
-        if (!url) return;
-        setPendingImage(url);
-        setTool("image");
-      };
-      input.click();
+      const url = await pickImage();
+      if (!url) return;
+      setPendingImage(url);
+      setTool("image");
       return;
     }
     setTool(next);
@@ -231,7 +229,7 @@ export default function App() {
   };
 
   const overlayHandlers: OverlayHandlers = {
-    placing: tool !== "select",
+    mode: tool === "select" ? "select" : tool === "edit-text" || tool === "edit-image" ? tool : "place",
     selectedId: picked?.objId ?? null,
     editingId: editing,
     onSelect: (pageId, objId) => setPicked(objId ? { pageId, objId } : null),
@@ -243,6 +241,85 @@ export default function App() {
       setPicked(null);
     },
     onFieldValue: (sourceId, name, value) => history.set((d) => setFieldValue(d, sourceId, name, value)),
+    onEditRun: (pageId, run) => {
+      // Cover the original words and put an editable copy on top, in the closest standard font.
+      const cover = makeObject<RectObject>({
+        kind: "rect",
+        fill: "#ffffff",
+        cx: run.x + run.w / 2,
+        cy: run.y + run.h / 2,
+        w: run.w + 2,
+        h: run.h + 2,
+        rot: 0,
+      });
+      const t = { text: run.text, fontSize: run.fontSize, color: "#000000", font: run.font, bold: run.bold };
+      const size = sizeText(t);
+      const top = run.baseline - TEXT_PAD - run.fontSize * 0.93;
+      const left = run.x - TEXT_PAD;
+      const text = makeObject<TextObject>({ kind: "text", ...t, ...size, cx: left + size.w / 2, cy: top + size.h / 2, rot: 0 });
+      history.set((d) => addObject(addObject(d, pageId, cover), pageId, text));
+      setTool("select");
+      setPicked({ pageId, objId: text.id });
+      setEditing(text.id);
+    },
+    onEditImage: async (pageId, region, action) => {
+      const cover = makeObject<RectObject>({
+        kind: "rect",
+        fill: "#ffffff",
+        cx: region.x + region.w / 2,
+        cy: region.y + region.h / 2,
+        // Two points of margin so the old image's anti-aliased edges don't show at small sizes.
+        w: region.w + 4,
+        h: region.h + 4,
+        rot: 0,
+      });
+      if (action === "remove") {
+        history.set((d) => addObject(d, pageId, cover));
+        setTool("select");
+        setPicked({ pageId, objId: cover.id });
+        return;
+      }
+      const src = await pickImage();
+      if (!src) return;
+      const px = await imageSize(src);
+      // Fit inside the old image's box, keeping the new picture's proportions.
+      const k = Math.min(region.w / px.width, region.h / px.height);
+      const image = makeObject<ImageObject>({
+        kind: "image",
+        src,
+        role: "image",
+        cx: cover.cx,
+        cy: cover.cy,
+        w: px.width * k,
+        h: px.height * k,
+        rot: 0,
+      });
+      history.set((d) => addObject(addObject(d, pageId, cover), pageId, image));
+      setTool("select");
+      setPicked({ pageId, objId: image.id });
+    },
+  };
+
+  const runOcr = async () => {
+    const ids = targetIds();
+    const pages = doc.pages.filter((p) => ids.has(p.id));
+    if (pages.length === 0) return;
+    try {
+      let found = 0;
+      for (let i = 0; i < pages.length; i++) {
+        const label = pages.length > 1 ? ` page ${i + 1} of ${pages.length}` : "";
+        setBusy(`Recognising text${label}…`);
+        const lines = await recognizePage(doc, pages[i], (p) => setBusy(`Recognising text${label}… ${Math.round(p * 100)}%`));
+        found += lines.length;
+        const id = pages[i].id;
+        history.set((d) => setOcr(d, id, lines));
+      }
+      flash(found ? `Recognised ${found} line${found === 1 ? "" : "s"} of text. It is now searchable and editable.` : "No text found");
+    } catch (err) {
+      flash(`OCR failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+    } finally {
+      setBusy(null);
+    }
   };
 
   const changePicked = (patch: Partial<PageObject>) => {
@@ -645,6 +722,7 @@ export default function App() {
           selected={pickedObject}
           onChange={changePicked}
           onDelete={deletePicked}
+          onOcr={runOcr}
         />
       )}
 
@@ -832,3 +910,15 @@ function highlight(text: string, query: string) {
   return parts.map((part, i) => (i % 2 === 1 ? <mark key={i}>{part}</mark> : part));
 }
 
+
+/** Ask for an image file; resolves to a PNG/JPEG data URL, or null if cancelled. */
+function pickImage(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/png,image/jpeg,image/webp";
+    input.onchange = () => readImageFile(input.files?.[0]).then(resolve, () => resolve(null));
+    input.oncancel = () => resolve(null);
+    input.click();
+  });
+}

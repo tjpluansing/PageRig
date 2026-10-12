@@ -3,7 +3,7 @@
 // list, so they are cheap, undoable, and never re-encode the source files.
 // A real PDF is only produced when exporting (see export.ts).
 
-import type { FieldValue, PageObject } from "./objects";
+import type { FieldValue, OcrLine, PageObject } from "./objects";
 
 export type Rotation = 0 | 90 | 180 | 270;
 
@@ -38,6 +38,8 @@ export interface PageRef {
   blankSize?: { width: number; height: number };
   /** Text, marks, images and new form fields placed on the page (see objects.ts). */
   objects?: PageObject[];
+  /** Text recognised on a scanned page; saved as an invisible, searchable layer. */
+  ocr?: OcrLine[];
 }
 
 export interface DocState {
@@ -193,4 +195,8 @@ export function cropFromDisplay(display: Crop, rotation: number): Crop {
 /** Inverse of cropFromDisplay. */
 export function cropToDisplay(stored: Crop, rotation: number): Crop {
   return cropFromDisplay(stored, 360 - normalizeRotation(rotation));
+}
+
+export function setOcr(doc: DocState, pageId: string, ocr: OcrLine[]): DocState {
+  return { ...doc, pages: doc.pages.map((p) => (p.id === pageId ? { ...p, ocr } : p)) };
 }
