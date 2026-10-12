@@ -1,9 +1,10 @@
 // Office documents are converted by LibreOffice. The desktop app runs the
 // copy installed on the computer; the web app sends the file to the converter
-// server in server/, whose address is set at build time in VITE_CONVERTER_URL.
+// server in server/, whose address is set at build time (VITE_SERVER_URL) or in Settings.
 
 import { invoke } from "@tauri-apps/api/core";
 import { isDesktop } from "./platform";
+import { loadSettings } from "./signing";
 
 export type OfficeTarget = "pdf" | "docx" | "pptx";
 
@@ -14,13 +15,11 @@ const PDF_IMPORT: Record<OfficeTarget, string | undefined> = {
   pptx: "impress_pdf_import",
 };
 
-const converterUrl = (import.meta.env.VITE_CONVERTER_URL as string | undefined)?.replace(/\/+$/, "");
-
 /** Whether Office conversion can be attempted here at all. */
-export const officeAvailable = isDesktop || !!converterUrl;
+export const officeAvailable = () => isDesktop || !!loadSettings().url;
 
 export const OFFICE_UNAVAILABLE =
-  "Converting Office files needs the PageRig desktop app, or a PageRig converter server set up for this website.";
+  "Converting Office files needs the PageRig desktop app, or a PageRig server (set its address in Settings).";
 
 export async function convertOffice(bytes: Uint8Array, name: string, to: OfficeTarget): Promise<Uint8Array> {
   const filter = PDF_IMPORT[to];
@@ -34,6 +33,7 @@ export async function convertOffice(bytes: Uint8Array, name: string, to: OfficeT
       throw new Error(typeof err === "string" ? err : (err as Error).message);
     }
   }
+  const converterUrl = loadSettings().url;
   if (!converterUrl) throw new Error(OFFICE_UNAVAILABLE);
   const params = new URLSearchParams({ to, name });
   if (filter) params.set("filter", filter);

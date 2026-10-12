@@ -1,155 +1,151 @@
-// PageRig converter: turns Office documents into PDFs, and PDFs into Word or
-// PowerPoint files, with LibreOffice. The web app posts the file's bytes to
-// /convert?to=pdf|docx|pptx&name=<file name>[&filter=<import filter>].
+// The PageRig server. It does three jobs, all optional:
+//   - converts Office documents to and from PDF with LibreOffice (/convert)
+//   - runs signature requests: stores documents, emails signers, keeps an
+//     audit trail and builds the signed PDF (/api, see sign/api.mjs)
+//   - serves the PageRig web app itself, when built into STATIC_DIR
 //
 // Settings (environment variables):
 //   PORT            port to listen on (default 8080)
-//   ALLOWED_ORIGIN  the web app's origin, for CORS (default *); comma-separate several
-//   MAX_MB          largest file accepted, in megabytes (default 50)
+//   PUBLIC_URL      the address people reach this server at, e.g. https://sign.example.com
+//   APP_URL         where the PageRig web app is, for signing links (default PUBLIC_URL)
+//   ALLOWED_ORIGIN  web app origins allowed to call this server, comma-separated (default *)
+//   SIGN_API_KEY    key the app must send to create signature requests; unset turns them off
+//   DATA_DIR        where requests and documents are kept (default ./data)
+//   SMTP_URL        mail server for signing emails, e.g. smtps://user:pass@smtp.example.com
+//   MAIL_FROM       sender address for those emails, e.g. "PageRig <sign@example.com>"
+//   TRUST_PROXY     set to 1 behind a reverse proxy, to record signers' real IP addresses
+//   STATIC_DIR      folder with the built web app to serve (default ./public, if present)
+//   MAX_MB          largest document accepted, in megabytes (default 50)
 //   TIMEOUT_S       longest a conversion may run, in seconds (default 120)
 //   CONCURRENCY     conversions run at once (default 2)
 //   SOFFICE         path to LibreOffice's soffice (default: soffice on the PATH)
 
-import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
-import { basename, extname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { extname, join, normalize, resolve, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { TYPES, convert, plan } from "./convert.mjs";
+import { HttpError, SignService } from "./sign/api.mjs";
+import { createMailer } from "./sign/mail.mjs";
+import { Store } from "./sign/store.mjs";
 
-const PORT = Number(process.env.PORT ?? 8080);
-const ORIGINS = (process.env.ALLOWED_ORIGIN ?? "*").split(",").map((o) => o.trim());
+const here = fileURLToPath(new URL(".", import.meta.url));
 const MAX_BYTES = Number(process.env.MAX_MB ?? 50) * 1024 * 1024;
-const TIMEOUT_MS = Number(process.env.TIMEOUT_S ?? 120) * 1000;
-const CONCURRENCY = Number(process.env.CONCURRENCY ?? 2);
-const SOFFICE = process.env.SOFFICE ?? "soffice";
 
-export const INPUTS = {
-  pdf: ["docx", "doc", "odt", "rtf", "txt", "html", "htm", "xlsx", "xls", "ods", "csv", "pptx", "ppt", "odp"],
-  docx: ["pdf"],
-  pptx: ["pdf"],
+const STATIC_TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".woff2": "font/woff2",
+  ".woff": "font/woff",
+  ".wasm": "application/wasm",
+  ".json": "application/json",
+  ".gz": "application/gzip",
 };
-const FILTERS = { docx: "writer_pdf_import", pptx: "impress_pdf_import" };
-const TYPES = {
-  pdf: "application/pdf",
-  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-};
 
-/** Check a request; returns the conversion to run, or an error message. */
-export function plan(params) {
-  const to = params.get("to");
-  if (!Object.hasOwn(INPUTS, to)) return { error: "Choose pdf, docx or pptx to convert to." };
-  const name = safeName(params.get("name") ?? "");
-  const ext = extname(name).slice(1).toLowerCase();
-  if (!INPUTS[to].includes(ext)) return { error: `Can't convert .${ext || "?"} files to ${to}.` };
-  const filter = params.get("filter");
-  if (filter && filter !== FILTERS[to]) return { error: "Unknown import filter." };
-  return { to, name, filter: FILTERS[to] };
-}
+export function createApp({
+  env = process.env,
+  store = new Store(resolve(env.DATA_DIR ?? join(here, "data"))),
+  mailer = createMailer({ smtpUrl: env.SMTP_URL, from: env.MAIL_FROM }),
+} = {}) {
+  const port = Number(env.PORT ?? 8080);
+  const publicUrl = (env.PUBLIC_URL ?? `http://localhost:${port}`).replace(/\/+$/, "");
+  const origins = (env.ALLOWED_ORIGIN ?? "*").split(",").map((o) => o.trim());
+  const staticDir = resolve(env.STATIC_DIR ?? join(here, "public"));
+  const serveApp = existsSync(join(staticDir, "index.html"));
+  const signing = new SignService({ store, mailer, apiKey: env.SIGN_API_KEY ?? "", appUrl: env.APP_URL ?? publicUrl, trustProxy: env.TRUST_PROXY === "1" });
 
-/** Only the file name, with nothing that could reach outside the work folder. */
-export function safeName(name) {
-  const base = basename(name.replace(/\\/g, "/")).replace(/[\x00-\x1f:*?"<>|]/g, "_").replace(/^\.+/, "");
-  return base || "document";
-}
+  const cors = (req, res) => {
+    const origin = req.headers.origin;
+    if (origins.includes("*")) res.setHeader("access-control-allow-origin", "*");
+    else if (origin && origins.includes(origin)) {
+      res.setHeader("access-control-allow-origin", origin);
+      res.setHeader("vary", "origin");
+    }
+    res.setHeader("access-control-allow-methods", "GET, POST, DELETE, OPTIONS");
+    res.setHeader("access-control-allow-headers", "content-type, authorization");
+  };
 
-let running = 0;
-const waiting = [];
-async function slot(fn) {
-  if (running >= CONCURRENCY) await new Promise((r) => waiting.push(r));
-  running++;
-  try {
-    return await fn();
-  } finally {
-    running--;
-    waiting.shift()?.();
-  }
-}
-
-export async function convert(bytes, { to, name, filter }) {
-  const work = await mkdtemp(join(tmpdir(), "pagerig-"));
-  try {
-    const input = join(work, "in", name);
-    const out = join(work, "out");
-    await Promise.all([mkdir(join(work, "in")), mkdir(out)]);
-    await writeFile(input, bytes);
-    const args = [
-      `-env:UserInstallation=${pathToFileURL(join(work, "profile")).href}`,
-      "--headless",
-      "--norestore",
-      "--nolockcheck",
-      ...(filter ? [`--infilter=${filter}`] : []),
-      "--convert-to",
-      to,
-      "--outdir",
-      out,
-      input,
-    ];
-    await new Promise((resolve, reject) =>
-      execFile(SOFFICE, args, { timeout: TIMEOUT_MS, killSignal: "SIGKILL" }, (err) => (err ? reject(err) : resolve())),
-    );
-    const produced = (await readdir(out)).find((f) => extname(f).slice(1).toLowerCase() === to);
-    if (!produced) throw new Error("LibreOffice couldn't convert this file.");
-    return await readFile(join(out, produced));
-  } finally {
-    await rm(work, { recursive: true, force: true });
-  }
-}
-
-function cors(req, res) {
-  const origin = req.headers.origin;
-  if (ORIGINS.includes("*")) res.setHeader("access-control-allow-origin", "*");
-  else if (origin && ORIGINS.includes(origin)) {
-    res.setHeader("access-control-allow-origin", origin);
-    res.setHeader("vary", "origin");
-  }
-  res.setHeader("access-control-allow-methods", "POST, OPTIONS");
-  res.setHeader("access-control-allow-headers", "content-type");
-}
-
-function fail(res, status, message) {
-  res.writeHead(status, { "content-type": "text/plain; charset=utf-8" }).end(message);
-}
-
-export const server = createServer(async (req, res) => {
-  cors(req, res);
-  const url = new URL(req.url ?? "/", "http://localhost");
-  if (req.method === "OPTIONS") return res.writeHead(204).end();
-  if (url.pathname === "/health") return res.writeHead(200).end("ok");
-  if (url.pathname !== "/convert" || req.method !== "POST") return fail(res, 404, "Not found");
-
-  const job = plan(url.searchParams);
-  if (job.error) return fail(res, 400, job.error);
-  if (Number(req.headers["content-length"] ?? 0) > MAX_BYTES) return fail(res, 413, "This file is too large to convert.");
-
-  const chunks = [];
-  let size = 0;
-  try {
-    for await (const chunk of req) {
-      size += chunk.length;
-      if (size > MAX_BYTES) {
-        fail(res, 413, "This file is too large to convert.");
-        req.destroy();
+  const server = createServer(async (req, res) => {
+    cors(req, res);
+    const url = new URL(req.url ?? "/", "http://localhost");
+    try {
+      if (req.method === "OPTIONS") return res.writeHead(204).end();
+      if (url.pathname === "/health") return res.writeHead(200).end("ok");
+      if (url.pathname === "/convert" && req.method === "POST") return await handleConvert(req, res, url);
+      if (url.pathname.startsWith("/api/")) {
+        // Documents arrive base64-encoded in JSON, a third larger than the file.
+        const handled = await signing.handle(req, res, url, () => readBody(req, Math.ceil(MAX_BYTES * 1.4)));
+        if (!handled) fail(res, 404, "Not found");
         return;
       }
-      chunks.push(chunk);
+      if (serveApp && req.method === "GET") return await serveStatic(res, staticDir, url.pathname);
+      fail(res, 404, "Not found");
+    } catch (err) {
+      if (err instanceof HttpError) return fail(res, err.status, err.message);
+      console.error(`${req.method} ${url.pathname} failed:`, err);
+      if (!res.headersSent) fail(res, 500, "Something went wrong on the server.");
     }
-  } catch {
-    return;
-  }
-  if (size === 0) return fail(res, 400, "No file was sent.");
+  });
 
+  return { server, store, mailer, signing, publicUrl };
+}
+
+async function handleConvert(req, res, url) {
+  const job = plan(url.searchParams);
+  if (job.error) return fail(res, 400, job.error);
+  const bytes = await readBody(req, MAX_BYTES);
+  if (bytes.length === 0) return fail(res, 400, "No file was sent.");
   try {
-    const out = await slot(() => convert(Buffer.concat(chunks), job));
+    const out = await convert(bytes, job);
     res.writeHead(200, { "content-type": TYPES[job.to], "content-length": out.length }).end(out);
   } catch (err) {
     const message = err?.killed ? "Converting took too long." : "LibreOffice couldn't convert this file.";
     console.error(`convert ${job.name} -> ${job.to} failed:`, err?.message ?? err);
     fail(res, 422, message);
   }
-});
+}
+
+async function readBody(req, max) {
+  if (Number(req.headers["content-length"] ?? 0) > max) throw new HttpError(413, "This file is too large.");
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > max) throw new HttpError(413, "This file is too large.");
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function serveStatic(res, dir, pathname) {
+  const rel = normalize(decodeURIComponent(pathname)).replace(/^([/\\])+/, "");
+  let file = resolve(dir, rel || "index.html");
+  if (!file.startsWith(dir + sep) || !existsSync(file) || extname(file) === "") file = join(dir, "index.html");
+  const body = await readFile(file);
+  const immutable = file.includes(`${join(dir, "assets")}`);
+  res
+    .writeHead(200, {
+      "content-type": STATIC_TYPES[extname(file)] ?? "application/octet-stream",
+      "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache",
+    })
+    .end(body);
+}
+
+function fail(res, status, message) {
+  res.writeHead(status, { "content-type": "text/plain; charset=utf-8" }).end(message);
+}
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  server.listen(PORT, () => console.log(`PageRig converter listening on :${PORT}`));
+  const { server, signing, publicUrl } = createApp();
+  const port = Number(process.env.PORT ?? 8080);
+  server.listen(port, () => {
+    console.log(`PageRig server listening on :${port} (${publicUrl})`);
+    if (!signing.enabled) console.log("Signature requests are off. Set SIGN_API_KEY to turn them on.");
+    if (!process.env.SMTP_URL) console.log("No SMTP_URL set, so signing emails are printed here instead of sent.");
+  });
 }
