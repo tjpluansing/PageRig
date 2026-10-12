@@ -16,7 +16,7 @@ A PDF viewer and editor that runs in the browser and as a desktop app (Windows, 
 - **Password-protected files** open for editing in every standard encryption type. Files whose owner restricted changes need the permissions password to save.
 - **Convert:** open JPG, PNG, WebP, GIF and other images as PDF pages, and Word, Excel, PowerPoint, OpenDocument, RTF, text and HTML files as PDFs. Export pages as PNG or JPEG images (zipped in the browser), or as an editable Word document or PowerPoint presentation.
 - **Digital signatures:** sign with a certificate (.p12 or .pfx file) so Acrobat and other readers can confirm who signed and that nothing changed since (PAdES). Signing an unchanged file keeps its earlier signatures. PDFs you open show whether their signatures are valid.
-- **Signature requests:** place signature, initials, date, name, text and checkbox fields for one or more signers, then send. Each signer gets an emailed link, signs in the browser (in order, if you choose), and everyone receives the signed PDF with a certificate page listing who signed, when and from where. Track progress, send reminders, cancel, and reuse documents as templates, including bulk sending one template to a list of people.
+- **Signature requests:** place signature, initials, date, name, text and checkbox fields for one or more signers, then send. Each signer gets an emailed link, signs in the browser (in order, if you choose), and everyone receives the signed PDF with a certificate page listing who signed, when and from where. Track progress, send reminders by hand or automatically every few days, cancel, and reuse documents as templates, including bulk sending one template to a list of people.
 - **Undo and redo** for every edit.
 - Files never leave your machine, except Office files on the web app and documents you send for signature, which go to your own PageRig server (see below). Pages are copied rather than re-rendered, so text stays selectable and file size stays small.
 
@@ -68,6 +68,7 @@ Then open the site, choose **Request signatures**, and enter the server address 
 | `TRUST_PROXY` | Set to `1` behind a reverse proxy so signers' real IP addresses are recorded. |
 | `SEAL_CERT`, `SEAL_CERT_PASSWORD` | Optional .p12 / .pfx certificate. When set, completed documents also get a digital seal, so PDF readers show them as unchanged since everyone signed. |
 | `MAX_MB`, `TIMEOUT_S`, `CONCURRENCY` | Limits on document size, conversion time and parallel conversions. |
+| `SWEEP_MINUTES` | How often automatic reminders go out and overdue requests expire (default 60). |
 
 To run it without Docker: install LibreOffice (for conversion), then `cd server && npm install && SIGN_API_KEY=... npm start`, and build the web app with `VITE_SERVER_URL=http://your-server npm run build`. The desktop app converts Office files with LibreOffice installed on the computer instead (found on the PATH or in its usual folder, or set `PAGERIG_SOFFICE`).
 
