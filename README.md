@@ -19,6 +19,12 @@ A PDF viewer and editor that runs in the browser and as a desktop app (Windows, 
 - **Undo and redo** for every edit.
 - Files never leave your machine, except Office files on the web app and documents you send for signature, which go to your own PageRig server (see below). Pages are copied rather than re-rendered, so text stays selectable and file size stays small.
 
+## Install
+
+Download the desktop app for Windows, macOS or Linux from [Releases](https://github.com/tjpluansing/PageRig/releases). The installers aren't code-signed yet, so Windows and macOS ask for confirmation the first time (on macOS, right-click the app and choose Open).
+
+To host the web version, run the server image from each release, `ghcr.io/tjpluansing/pagerig` (see [The PageRig server](#the-pagerig-server) for its settings). Releases are made by pushing a tag like `v1.0.0`, which builds everything and opens a draft release.
+
 ## Roadmap
 
 1. Foundation, viewer and page management *(done)*
