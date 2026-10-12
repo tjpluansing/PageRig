@@ -207,3 +207,19 @@ export function cropToDisplay(stored: Crop, rotation: number): Crop {
 export function setOcr(doc: DocState, pageId: string, ocr: OcrLine[]): DocState {
   return { ...doc, pages: doc.pages.map((p) => (p.id === pageId ? { ...p, ocr } : p)) };
 }
+
+/**
+ * The one file the document still is exactly, if nothing has been changed
+ * since it was opened: same pages in the same order, nothing added or filled
+ * in. Saving that file's own bytes keeps anything a re-save would lose, such
+ * as digital signatures.
+ */
+export function untouchedSource(doc: DocState): Source | null {
+  const ids = Object.keys(doc.sources);
+  if (ids.length !== 1) return null;
+  const source = doc.sources[ids[0]];
+  if (doc.pages.length !== source.pageCount) return null;
+  const same = doc.pages.every((p, i) => p.sourceId === source.id && p.sourceIndex === i && p.rotation === 0 && !p.crop && !p.objects?.length && !p.ocr?.length);
+  const filled = Object.values(doc.fieldValues).some((v) => Object.keys(v).length > 0);
+  return same && !filled ? source : null;
+}

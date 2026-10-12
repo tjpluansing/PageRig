@@ -12,6 +12,7 @@ import {
   movePages,
   parseRanges,
   rotatePages,
+  untouchedSource,
   type DocState,
   type Source,
 } from "./document";
@@ -119,5 +120,17 @@ describe("crop orientation", () => {
     for (const r of [0, 90, 180, 270]) {
       expect(cropToDisplay(cropFromDisplay(display, r), r)).toEqual(display);
     }
+  });
+});
+
+describe("untouchedSource", () => {
+  it("is the file only while nothing has changed", async () => {
+    const a = await makeSource("a", 2);
+    const doc = addSource(emptyDoc, a);
+    expect(untouchedSource(doc)).toBe(a);
+    expect(untouchedSource(rotatePages(doc, new Set([doc.pages[0].id]), 90))).toBeNull();
+    expect(untouchedSource(movePages(doc, new Set([doc.pages[1].id]), 0))).toBeNull();
+    expect(untouchedSource(addSource(doc, await makeSource("b", 1)))).toBeNull();
+    expect(untouchedSource({ ...doc, fieldValues: { a: { name: "Ada" } } })).toBeNull();
   });
 });

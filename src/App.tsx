@@ -9,9 +9,12 @@ import {
   newId,
   rotatePages,
   setOcr,
+  untouchedSource,
   type DocState,
   type Source,
 } from "./lib/document";
+import { checkSignatures, signPdf, type SignatureCheck } from "../server/sign/pades.mjs";
+import { CertSignDialog, SignatureBanner, SignaturesDialog, type CertSignChoice } from "./components/CertSignDialog";
 import { exportGroups, exportPdf } from "./lib/export";
 import { pickFiles, readBrowserFiles, saveFile, saveFiles, type PickedFile } from "./lib/platform";
 import { fileKind, imageToPdf, pdfToImages } from "./lib/convert";
@@ -54,7 +57,7 @@ import { DEFAULT_SAVE_SETTINGS, isProtectedSave, ProtectDialog, type SaveSetting
 const PX_PER_PT = 96 / 72;
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4];
 
-type Dialog = null | "crop" | "split" | "protect" | "export" | "send" | "requests" | "server";
+type Dialog = null | "crop" | "split" | "protect" | "export" | "send" | "requests" | "server" | "certify" | "signatures";
 
 const SIG_KEYS: Record<SignatureRole, string> = { signature: "pagerig.signature", initials: "pagerig.initials" };
 
@@ -88,6 +91,9 @@ export default function App() {
   const [searching, setSearching] = useState(false);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  /** Digital signatures in the file as opened. */
+  const [digitalSigs, setDigitalSigs] = useState<SignatureCheck[]>([]);
+  const sigCheck = useRef(0);
   const [message, setMessage] = useState<{ kind: "error" | "info"; text: string } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [tool, setTool] = useState<Tool>("select");
@@ -421,6 +427,13 @@ export default function App() {
           setHits(null);
           setQuery("");
           viewerRef.current?.scrollTo({ top: 0 });
+          setDigitalSigs([]);
+          const check = ++sigCheck.current;
+          if (sources.length === 1 && !sources[0].encrypted) {
+            checkSignatures(sources[0].bytes)
+              .then((sigs) => sigCheck.current === check && setDigitalSigs(sigs))
+              .catch(() => {});
+          }
           // A file that needed a password to open keeps needing one when saved, unless changed under Protect.
           const password = sources[0].openPassword;
           setSaveSettings(password ? { ...DEFAULT_SAVE_SETTINGS, protection: { openPassword: password, ownerPassword: "", permissions: ALL_PERMISSIONS } } : DEFAULT_SAVE_SETTINGS);
@@ -479,6 +492,29 @@ export default function App() {
       await ensureExportable(doc);
       const ok = await saveFile(editedName(docName), await exportPdf(doc, doc.pages, saveSettings));
       if (ok) flash("Saved");
+    } catch (err) {
+      flash((err as Error).message, "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** Sign with a certificate and save. An unchanged file is signed as it is, keeping any earlier signatures. */
+  const signWithCertificate = async ({ signer, reason, location, visible }: CertSignChoice) => {
+    setDialog(null);
+    setBusy("Signing…");
+    try {
+      const same = untouchedSource(doc);
+      const cleanUp = Object.values(saveSettings.sanitize).some(Boolean);
+      let pdf: Uint8Array;
+      if (same && !cleanUp && !same.restricted && !same.openPassword) pdf = same.bytes;
+      else {
+        await ensureExportable(doc);
+        pdf = await exportPdf(doc, doc.pages, { sanitize: saveSettings.sanitize });
+      }
+      const signed = await signPdf(pdf, signer, { reason, location, visible: visible ? { page: -1 } : null });
+      const ok = await saveFile(`${stem(docName)} (signed).pdf`, signed);
+      if (ok) flash(`Signed as ${signer.name} and saved`);
     } catch (err) {
       flash((err as Error).message, "error");
     } finally {
@@ -900,6 +936,7 @@ export default function App() {
           onChange={changePicked}
           onDelete={deletePicked}
           onOcr={runOcr}
+          onCertify={() => setDialog("certify")}
         />
       )}
 
@@ -954,6 +991,7 @@ export default function App() {
           </aside>
 
           <main className="viewer" ref={viewerRef} onScroll={onViewerScroll}>
+            {digitalSigs.length > 0 && <SignatureBanner sigs={digitalSigs} edited={!untouchedSource(doc)} onDetails={() => setDialog("signatures")} />}
             {doc.pages.map((page, i) => {
               const w = Math.round(displaySize(page).width * zoom * PX_PER_PT);
               return (
@@ -1058,6 +1096,14 @@ export default function App() {
           }}
         />
       )}
+      {dialog === "certify" && (
+        <CertSignDialog
+          blocked={saveSettings.protection ? "A password-protected file can't also be digitally signed here. Turn off the password under Protect first." : null}
+          onSign={signWithCertificate}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === "signatures" && <SignaturesDialog sigs={digitalSigs} onClose={() => setDialog(null)} />}
       {dialog === "export" && <ExportDialog selectedCount={selected.size} onExport={exportAs} onClose={() => setDialog(null)} />}
       {dialog === "split" && (
         <SplitDialog pageCount={doc.pages.length} onSplit={split} onClose={() => setDialog(null)} />

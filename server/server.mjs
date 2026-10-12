@@ -14,13 +14,15 @@
 //   SMTP_URL        mail server for signing emails, e.g. smtps://user:pass@smtp.example.com
 //   MAIL_FROM       sender address for those emails, e.g. "PageRig <sign@example.com>"
 //   TRUST_PROXY     set to 1 behind a reverse proxy, to record signers' real IP addresses
+//   SEAL_CERT       a .p12 / .pfx file to digitally seal completed documents with (optional)
+//   SEAL_CERT_PASSWORD  its password
 //   STATIC_DIR      folder with the built web app to serve (default ./public, if present)
 //   MAX_MB          largest document accepted, in megabytes (default 50)
 //   TIMEOUT_S       longest a conversion may run, in seconds (default 120)
 //   CONCURRENCY     conversions run at once (default 2)
 //   SOFFICE         path to LibreOffice's soffice (default: soffice on the PATH)
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { extname, join, normalize, resolve, sep } from "node:path";
@@ -28,6 +30,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { TYPES, convert, plan } from "./convert.mjs";
 import { HttpError, SignService } from "./sign/api.mjs";
 import { createMailer } from "./sign/mail.mjs";
+import { readP12 } from "./sign/pades.mjs";
 import { Store } from "./sign/store.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -57,7 +60,14 @@ export function createApp({
   const origins = (env.ALLOWED_ORIGIN ?? "*").split(",").map((o) => o.trim());
   const staticDir = resolve(env.STATIC_DIR ?? join(here, "public"));
   const serveApp = existsSync(join(staticDir, "index.html"));
-  const signing = new SignService({ store, mailer, apiKey: env.SIGN_API_KEY ?? "", appUrl: env.APP_URL ?? publicUrl, trustProxy: env.TRUST_PROXY === "1" });
+  const signing = new SignService({
+    store,
+    mailer,
+    apiKey: env.SIGN_API_KEY ?? "",
+    appUrl: env.APP_URL ?? publicUrl,
+    trustProxy: env.TRUST_PROXY === "1",
+    seal: env.SEAL_CERT ? readP12(readFileSync(env.SEAL_CERT), env.SEAL_CERT_PASSWORD ?? "") : null,
+  });
 
   const cors = (req, res) => {
     const origin = req.headers.origin;

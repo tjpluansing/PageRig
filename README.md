@@ -15,6 +15,7 @@ A PDF viewer and editor that runs in the browser and as a desktop app (Windows, 
 - **Protect:** require a password to open, restrict printing, copying and editing (AES-256), and strip metadata, comments, scripts and attachments.
 - **Password-protected files** open for editing in every standard encryption type. Files whose owner restricted changes need the permissions password to save.
 - **Convert:** open JPG, PNG, WebP, GIF and other images as PDF pages, and Word, Excel, PowerPoint, OpenDocument, RTF, text and HTML files as PDFs. Export pages as PNG or JPEG images (zipped in the browser), or as an editable Word document or PowerPoint presentation.
+- **Digital signatures:** sign with a certificate (.p12 or .pfx file) so Acrobat and other readers can confirm who signed and that nothing changed since (PAdES). Signing an unchanged file keeps its earlier signatures. PDFs you open show whether their signatures are valid.
 - **Signature requests:** place signature, initials, date, name, text and checkbox fields for one or more signers, then send. Each signer gets an emailed link, signs in the browser (in order, if you choose), and everyone receives the signed PDF with a certificate page listing who signed, when and from where. Track progress, send reminders, cancel, and reuse documents as templates, including bulk sending one template to a list of people.
 - **Undo and redo** for every edit.
 - Files never leave your machine, except Office files on the web app and documents you send for signature, which go to your own PageRig server (see below). Pages are copied rather than re-rendered, so text stays selectable and file size stays small.
@@ -65,11 +66,12 @@ Then open the site, choose **Request signatures**, and enter the server address 
 | `DATA_DIR` | Where requests, documents and the SQLite database are kept (`/data` in Docker; back it up). |
 | `ALLOWED_ORIGIN` | The web app's origin, if it's served from somewhere else (CORS). |
 | `TRUST_PROXY` | Set to `1` behind a reverse proxy so signers' real IP addresses are recorded. |
+| `SEAL_CERT`, `SEAL_CERT_PASSWORD` | Optional .p12 / .pfx certificate. When set, completed documents also get a digital seal, so PDF readers show them as unchanged since everyone signed. |
 | `MAX_MB`, `TIMEOUT_S`, `CONCURRENCY` | Limits on document size, conversion time and parallel conversions. |
 
 To run it without Docker: install LibreOffice (for conversion), then `cd server && npm install && SIGN_API_KEY=... npm start`, and build the web app with `VITE_SERVER_URL=http://your-server npm run build`. The desktop app converts Office files with LibreOffice installed on the computer instead (found on the PATH or in its usual folder, or set `PAGERIG_SOFFICE`).
 
-How signing works: each signer's link carries a random token, of which the server keeps only a hash. Signers agree to sign electronically before finishing, and the server records when each person was emailed, opened, signed or declined, with their IP address and browser. When everyone has signed, it draws the entries into the PDF, adds a certificate page, and keeps the SHA-256 fingerprint of the result, so anyone can later check a copy is unchanged (`POST /api/verify`). This is a standard electronic signature with an audit trail, which is legally recognised for most documents in the US, UK and EU; it is not a certificate-based digital signature.
+How signing works: each signer's link carries a random token, of which the server keeps only a hash. Signers agree to sign electronically before finishing, and the server records when each person was emailed, opened, signed or declined, with their IP address and browser. When everyone has signed, it draws the entries into the PDF, adds a certificate page, and keeps the SHA-256 fingerprint of the result, so anyone can later check a copy is unchanged (`POST /api/verify`). This is a standard electronic signature with an audit trail, which is legally recognised for most documents in the US, UK and EU. With `SEAL_CERT` set, the server also seals the completed document with its certificate; signers themselves don't need certificates.
 
 Converting PDF to Word or PowerPoint keeps text editable but places it in positioned boxes, so complex layouts can need tidying. PDF to Excel and capturing web pages as PDF aren't supported yet.
 
@@ -89,6 +91,7 @@ Converting PDF to Word or PowerPoint keeps text editable but places it in positi
 | `src/components/SignRequests.tsx`, `SignPage.tsx` | Sending, tracking and templates; the page signers use. |
 | `src/lib/platform.ts` | Opening and saving files in the browser vs. the desktop app. |
 | `src/components/` | Thumbnails, page canvas, the on-page overlay, the Fill & sign toolbar and dialogs. |
+| `server/sign/pades.mjs` | Certificate-based digital signatures (signing and checking), shared by the app and the server. |
 | `src-tauri/` | The Tauri desktop shell, including the LibreOffice command (`src/office.rs`). |
 | `server/` | The PageRig server: Office conversion, the signing service (`sign/`: storage, email, the signed PDF and certificate) and its Dockerfile. |
 

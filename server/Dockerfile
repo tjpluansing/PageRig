@@ -8,6 +8,8 @@ RUN npm ci
 COPY index.html vite.config.ts tsconfig.json ./
 COPY public ./public
 COPY src ./src
+# Digital signatures are shared with the server.
+COPY server/sign/pades.mjs server/sign/pades.d.mts ./server/sign/
 # "/" makes the app talk to the server it's served from.
 RUN VITE_SERVER_URL=/ npx vite build
 

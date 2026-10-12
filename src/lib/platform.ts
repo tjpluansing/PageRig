@@ -16,13 +16,17 @@ export const OPENABLE = {
   accept: ["application/pdf", "image/*", ...[...IMAGE_EXTENSIONS, ...OFFICE_EXTENSIONS].map((e) => `.${e}`), ".pdf"].join(","),
 };
 
-export async function pickFiles(multiple = true): Promise<PickedFile[]> {
+/**
+ * Choose files to open. Without `only`, anything the app can open as pages;
+ * with it, files of just those types (such as certificates), read as they are.
+ */
+export async function pickFiles(multiple = true, only?: { name: string; extensions: string[] }[]): Promise<PickedFile[]> {
   if (isDesktop) {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const { readFile } = await import("@tauri-apps/plugin-fs");
     const picked = await open({
       multiple,
-      filters: [
+      filters: only ?? [
         { name: "PDFs, images and Office documents", extensions: OPENABLE.extensions },
         { name: "PDF", extensions: ["pdf"] },
         { name: "Images", extensions: IMAGE_EXTENSIONS },
@@ -36,9 +40,10 @@ export async function pickFiles(multiple = true): Promise<PickedFile[]> {
   return new Promise((resolve) => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = OPENABLE.accept;
+    input.accept = only ? only.flatMap((f) => f.extensions.map((e) => `.${e}`)).join(",") : OPENABLE.accept;
     input.multiple = multiple;
-    input.onchange = async () => resolve(await readBrowserFiles(input.files));
+    input.onchange = async () =>
+      resolve(only ? await Promise.all(Array.from(input.files ?? []).map(async (f) => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) }))) : await readBrowserFiles(input.files));
     input.oncancel = () => resolve([]);
     input.click();
   });

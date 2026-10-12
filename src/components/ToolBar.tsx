@@ -48,6 +48,8 @@ interface Props {
   onDelete: () => void;
   /** Run OCR on the selected (or current) pages. */
   onOcr?: () => void;
+  /** Sign with a certificate. */
+  onCertify?: () => void;
 }
 
 const TOOLS: { tool: Tool; label: string; title: string }[] = [
@@ -79,6 +81,7 @@ export function ToolBar({
   onChange,
   onDelete,
   onOcr,
+  onCertify,
 }: Props) {
   const [stampMenu, setStampMenu] = useState(false);
 
@@ -146,6 +149,11 @@ export function ToolBar({
           </div>
         )}
       </span>
+      {onCertify && (
+        <button title="Sign with a digital certificate (.p12 or .pfx) and save" onClick={onCertify}>
+          Certificate…
+        </button>
+      )}
       <span className="sep" />
       <span className="group-label">Form fields</span>
       {FIELD_TOOLS.map((t) => (

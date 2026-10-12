@@ -17,6 +17,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      # pdfsig, to check digitally signed PDFs with a second implementation.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
       - run: npm ci && npm test
         working-directory: server
       - run: npm run build
