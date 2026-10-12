@@ -112,6 +112,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: installers
+          # Only the installers; the Docker build also leaves a build-record artifact.
+          pattern: installers-*
           merge-multiple: true
       - name: Create a draft release
         env:
