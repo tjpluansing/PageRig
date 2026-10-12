@@ -50,7 +50,8 @@ export class SignService {
    * @param {string} o.appUrl      where the PageRig web app lives, for signing links
    * @param {boolean} [o.trustProxy] read the client address from X-Forwarded-For
    */
-  constructor({ store, mailer, apiKey, appUrl, trustProxy = false, log = console.error }) {
+  constructor({ store, mailer, apiKey, appUrl, trustProxy = false, log = console.error, config = {} }) {
+    this.config = config;
     this.store = store;
     this.mailer = mailer;
     this.apiKey = apiKey ?? "";
@@ -81,7 +82,7 @@ export class SignService {
     };
     const [a, b, c] = parts;
 
-    if (a === "config" && m === "GET") return send(res, 200, { signing: this.enabled });
+    if (a === "config" && m === "GET") return send(res, 200, { signing: this.enabled, ...this.config });
     if (a === "verify" && m === "POST") return send(res, 200, this.verify(await readBody()));
 
     if (a === "sign" && b) {

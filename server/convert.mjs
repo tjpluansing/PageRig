@@ -43,7 +43,7 @@ export function safeName(name) {
 
 let running = 0;
 const waiting = [];
-async function slot(fn) {
+export async function slot(fn) {
   if (running >= CONCURRENCY) await new Promise((r) => waiting.push(r));
   running++;
   try {

@@ -17,6 +17,8 @@ import { pickFiles, readBrowserFiles, saveFile, saveFiles, type PickedFile } fro
 import { fileKind, imageToPdf, pdfToImages } from "./lib/convert";
 import { convertOffice } from "./lib/office";
 import { ExportDialog, type ExportChoice } from "./components/ExportDialog";
+import { WebPageDialog } from "./components/WebPageDialog";
+import { captureWebPage } from "./lib/capture";
 import { displaySize, findText, inspectPdf, pageFrame, registerSource, searchDoc, sourceFieldNames, type SearchHit } from "./lib/render";
 import { ALL_PERMISSIONS, isRestricted, unlockPdf } from "./lib/security";
 import {
@@ -54,7 +56,7 @@ import { DEFAULT_SAVE_SETTINGS, isProtectedSave, ProtectDialog, type SaveSetting
 const PX_PER_PT = 96 / 72;
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4];
 
-type Dialog = null | "crop" | "split" | "protect" | "export" | "send" | "requests" | "server";
+type Dialog = null | "crop" | "split" | "protect" | "export" | "send" | "requests" | "server" | "web";
 
 const SIG_KEYS: Record<SignatureRole, string> = { signature: "pagerig.signature", initials: "pagerig.initials" };
 
@@ -584,6 +586,22 @@ export default function App() {
     }
   };
 
+  const openWebPage = async (url: string) => {
+    const mode = hasDoc ? "insert" : "open";
+    setDialog(null);
+    setBusy("Loading the web page…");
+    let file;
+    try {
+      file = await captureWebPage(url);
+    } catch (err) {
+      flash((err as Error).message, "error");
+      return;
+    } finally {
+      setBusy(null);
+    }
+    await openFiles([file], mode);
+  };
+
   const openSettings = () => {
     setAfterSettings(dialog);
     setDialog("server");
@@ -913,6 +931,11 @@ export default function App() {
               Choose files
             </button>
             <p>
+              <button className="link" onClick={() => setDialog("web")}>
+                Open a web page as PDF
+              </button>
+            </p>
+            <p>
               <button className="link" onClick={() => setDialog("requests")}>
                 See documents sent for signature
               </button>
@@ -938,6 +961,9 @@ export default function App() {
               <button onClick={addBlank} title="Insert a blank page after the selection">+ Blank</button>
               <button onClick={() => pickFiles().then((f) => openFiles(f, "insert"))} title="Insert pages from another PDF after the selection">
                 + From file
+              </button>
+              <button className="wide" onClick={() => setDialog("web")} title="Insert a web page, saved as PDF, after the selection">
+                + Web page
               </button>
               <button disabled={!sel} onClick={extract} title="Save the selected pages as a new PDF">Extract</button>
               <button disabled={doc.pages.length < 2} onClick={() => setDialog("split")}>Split…</button>
@@ -1058,6 +1084,7 @@ export default function App() {
           }}
         />
       )}
+      {dialog === "web" && <WebPageDialog insert={hasDoc} onCapture={openWebPage} onSettings={openSettings} onClose={() => setDialog(null)} />}
       {dialog === "export" && <ExportDialog selectedCount={selected.size} onExport={exportAs} onClose={() => setDialog(null)} />}
       {dialog === "split" && (
         <SplitDialog pageCount={doc.pages.length} onSplit={split} onClose={() => setDialog(null)} />
