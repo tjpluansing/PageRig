@@ -17,16 +17,6 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - name: Which Chrome (diagnostic)
-        shell: bash
-        run: |
-          for b in /usr/bin/chromium /usr/bin/chromium-browser /usr/bin/google-chrome /usr/bin/google-chrome-stable; do
-            [ -e "$b" ] && echo "$b -> $(readlink -f $b): $($b --version 2>&1 | head -1)"
-          done
-          d=$(mktemp -d)
-          b=$(ls /usr/bin/chromium /usr/bin/chromium-browser /usr/bin/google-chrome 2>/dev/null | head -1)
-          timeout 60 $b --headless --no-sandbox --disable-gpu --user-data-dir=$d/p --print-to-pdf=$d/t.pdf "data:text/html,<h1>hi</h1>" 2>&1 | tail -5
-          echo "exit $?"; ls -la $d
       - name: Server tests
         working-directory: server
         shell: bash
