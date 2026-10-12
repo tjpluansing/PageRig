@@ -14,7 +14,7 @@ A PDF viewer and editor that runs in the browser and as a desktop app (Windows, 
 - **Redact:** drag over anything, or redact every match of a search. When you save, everything under a redaction is removed for good: the page is saved as an image with its remaining text kept searchable.
 - **Protect:** require a password to open, restrict printing, copying and editing (AES-256), and strip metadata, comments, scripts and attachments.
 - **Password-protected files** open for editing in every standard encryption type. Files whose owner restricted changes need the permissions password to save.
-- **Convert:** open JPG, PNG, WebP, GIF and other images as PDF pages, and Word, Excel, PowerPoint, OpenDocument, RTF, text and HTML files as PDFs. Export pages as PNG or JPEG images (zipped in the browser), or as an editable Word document or PowerPoint presentation.
+- **Convert:** open JPG, PNG, WebP, GIF and other images as PDF pages, and Word, Excel, PowerPoint, OpenDocument, RTF, text and HTML files as PDFs. Export pages as PNG or JPEG images (zipped in the browser), as an Excel workbook with tables in rows and columns (done in the app, no server needed), or as an editable Word document or PowerPoint presentation.
 - **Web pages:** open any public web page as a PDF, or add its pages to the document you're working on.
 - **Signature requests:** place signature, initials, date, name, text and checkbox fields for one or more signers, then send. Each signer gets an emailed link, signs in the browser (in order, if you choose), and everyone receives the signed PDF with a certificate page listing who signed, when and from where. Track progress, send reminders by hand or automatically every few days, cancel, and reuse documents as templates, including bulk sending one template to a list of people.
 - **Undo and redo** for every edit.
@@ -75,7 +75,7 @@ To run it without Docker: install LibreOffice (for conversion), then `cd server 
 
 How signing works: each signer's link carries a random token, of which the server keeps only a hash. Signers agree to sign electronically before finishing, and the server records when each person was emailed, opened, signed or declined, with their IP address and browser. When everyone has signed, it draws the entries into the PDF, adds a certificate page, and keeps the SHA-256 fingerprint of the result, so anyone can later check a copy is unchanged (`POST /api/verify`). This is a standard electronic signature with an audit trail, which is legally recognised for most documents in the US, UK and EU; it is not a certificate-based digital signature.
 
-Converting PDF to Word or PowerPoint keeps text editable but places it in positioned boxes, so complex layouts can need tidying. PDF to Excel isn't supported yet.
+Converting PDF to Word or PowerPoint keeps text editable but places it in positioned boxes, so complex layouts can need tidying. PDF to Excel works best on tables and statements; each line of ordinary text becomes a row.
 
 ### Layout
 
