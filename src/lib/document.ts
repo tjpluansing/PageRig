@@ -4,6 +4,7 @@
 // A real PDF is only produced when exporting (see export.ts).
 
 import type { FieldValue, OcrLine, PageObject } from "./objects";
+import type { Permissions } from "./security";
 
 export type Rotation = 0 | 90 | 180 | 270;
 
@@ -20,8 +21,14 @@ export interface Source {
   name: string;
   bytes: Uint8Array;
   pageCount: number;
-  /** Encrypted files can be viewed but not yet re-saved. */
+  /** Encrypted with a scheme PageRig can view but not decrypt; can't be saved. */
   encrypted?: boolean;
+  /** The owner restricted changes; saving needs the permissions password. */
+  restricted?: Permissions;
+  /** The original encrypted file, to check the permissions password against. */
+  locked?: Uint8Array;
+  /** The password the file was opened with, if it needed one. */
+  openPassword?: string;
 }
 
 export interface PageRef {

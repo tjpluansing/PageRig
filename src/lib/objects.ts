@@ -71,7 +71,51 @@ export interface RectObject extends Base {
   fill: string;
 }
 
-export type PageObject = TextObject | ImageObject | MarkObject | FieldObject | RectObject;
+/**
+ * An area marked for redaction. Shown as an outline while editing; when saved,
+ * everything under it is permanently removed and it becomes a solid black box.
+ */
+export interface RedactObject extends Base {
+  kind: "redact";
+}
+
+export type SignFieldType = "signature" | "initials" | "date" | "name" | "text" | "checkbox";
+
+/**
+ * A place for someone else to sign or fill in, when sending the document for
+ * signature. Not drawn when saving; sent to the signing service instead.
+ */
+export interface SignFieldObject extends Base {
+  kind: "sign";
+  signType: SignFieldType;
+  /** Which signer fills it in, counting from 0. */
+  signer: number;
+  required: boolean;
+}
+
+export const SIGN_FIELD_SIZES: Record<SignFieldType, { w: number; h: number }> = {
+  signature: { w: 160, h: 40 },
+  initials: { w: 60, h: 30 },
+  date: { w: 110, h: 20 },
+  name: { w: 160, h: 20 },
+  text: { w: 160, h: 20 },
+  checkbox: { w: 16, h: 16 },
+};
+
+export const SIGN_FIELD_LABELS: Record<SignFieldType, string> = {
+  signature: "Signature",
+  initials: "Initials",
+  date: "Date signed",
+  name: "Name",
+  text: "Text",
+  checkbox: "Checkbox",
+};
+
+/** One colour per signer, repeating after eight. */
+export const SIGNER_COLORS = ["#2563eb", "#d97706", "#059669", "#db2777", "#7c3aed", "#0891b2", "#65a30d", "#dc2626"];
+export const signerColor = (i: number) => SIGNER_COLORS[i % SIGNER_COLORS.length];
+
+export type PageObject = TextObject | ImageObject | MarkObject | FieldObject | RectObject | RedactObject | SignFieldObject;
 
 /** A line of text found by OCR on a scanned page, in unrotated page space (points, top-left origin). */
 export interface OcrLine {

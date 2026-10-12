@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { PageObject, TextObject } from "../lib/objects";
+import { useState, type CSSProperties } from "react";
+import { SIGN_FIELD_LABELS, signerColor, type PageObject, type SignFieldObject, type SignFieldType, type TextObject } from "../lib/objects";
 
 export type Tool =
   | "select"
@@ -16,7 +16,9 @@ export type Tool =
   | "image"
   | "field-text"
   | "field-checkbox"
-  | "field-dropdown";
+  | "field-dropdown"
+  | "redact"
+  | `req-${SignFieldType}`;
 
 export interface Stamp {
   text: string;
@@ -66,7 +68,18 @@ const FIELD_TOOLS: { tool: Tool; label: string }[] = [
 ];
 
 /** Fill & sign and form-building tools, plus settings for the selected object. */
-export function ToolBar({ tool, onTool, stamp, onStamp, hasSignature, onRedoSignature, selected, onChange, onDelete, onOcr }: Props) {
+export function ToolBar({
+  tool,
+  onTool,
+  stamp,
+  onStamp,
+  hasSignature,
+  onRedoSignature,
+  selected,
+  onChange,
+  onDelete,
+  onOcr,
+}: Props) {
   const [stampMenu, setStampMenu] = useState(false);
 
   return (
@@ -87,6 +100,9 @@ export function ToolBar({ tool, onTool, stamp, onStamp, hasSignature, onRedoSign
           OCR
         </button>
       )}
+      <button className={tool === "redact" ? "active" : ""} title="Black out text or images for good" onClick={() => onTool("redact")}>
+        Redact
+      </button>
       <span className="sep" />
       <span className="group-label">Fill &amp; sign</span>
       {TOOLS.map((t) => (
@@ -160,6 +176,7 @@ function Hint({ tool, stamp, hasSignature, onRedoSignature }: Pick<Props, "tool"
       </span>
     );
   }
+  if (tool === "redact") return <span className="hint-inline">Drag over anything to redact it. It's removed for good when you save.</span>;
   if (tool === "stamp") return <span className="hint-inline">Click to place “{stamp.text}”.</span>;
   return <span className="hint-inline">Click on the page to place it. Esc to stop.</span>;
 }
@@ -219,5 +236,86 @@ function Properties({ obj, onChange, onDelete }: { obj: PageObject; onChange: (p
       )}
       <button onClick={onDelete}>Delete</button>
     </span>
+  );
+}
+
+const REQUEST_TOOLS: SignFieldType[] = ["signature", "initials", "date", "name", "text", "checkbox"];
+
+interface RequestProps {
+  tool: Tool;
+  onTool: (tool: Tool) => void;
+  signer: number;
+  signerCount: number;
+  onSigner: (index: number) => void;
+  onAddSigner: () => void;
+  selected: SignFieldObject | null;
+  onChange: (patch: Partial<SignFieldObject>) => void;
+  onDelete: () => void;
+  onSend: () => void;
+  onRequests: () => void;
+  canSend: boolean;
+}
+
+/** Placing fields for other people to sign or fill in, then sending the document to them. */
+export function RequestBar({ tool, onTool, signer, signerCount, onSigner, onAddSigner, selected, onChange, onDelete, onSend, onRequests, canSend }: RequestProps) {
+  const signers = Array.from({ length: signerCount }, (_, i) => i);
+  return (
+    <div className="toolbar tools request-bar" role="toolbar" aria-label="Request signatures">
+      <button className={tool === "select" ? "active" : ""} title="Select and move fields (Esc)" onClick={() => onTool("select")}>
+        Select
+      </button>
+      <span className="sep" />
+      <span className="group-label">Fields for</span>
+      {signers.map((i) => (
+        <button
+          key={i}
+          className={`signer-chip${signer === i ? " active" : ""}`}
+          style={{ "--signer": signerColor(i) } as CSSProperties}
+          onClick={() => onSigner(i)}
+          title={`Place fields for signer ${i + 1}`}
+        >
+          Signer {i + 1}
+        </button>
+      ))}
+      {signerCount < 20 && (
+        <button onClick={onAddSigner} title="Add another signer" aria-label="Add signer">
+          +
+        </button>
+      )}
+      <span className="sep" />
+      {REQUEST_TOOLS.map((t) => (
+        <button key={t} className={tool === `req-${t}` ? "active" : ""} onClick={() => onTool(`req-${t}`)} title={`Add a ${SIGN_FIELD_LABELS[t].toLowerCase()} field for signer ${signer + 1}`}>
+          {SIGN_FIELD_LABELS[t]}
+        </button>
+      ))}
+      <span className="spacer" />
+      {tool.startsWith("req-") && <span className="hint-inline">Click where signer {signer + 1} should fill this in.</span>}
+      {selected && tool === "select" && (
+        <span className="props">
+          <label>
+            For{" "}
+            <select value={selected.signer} onChange={(e) => onChange({ signer: Number(e.target.value) })} aria-label="Signer">
+              {signers.map((i) => (
+                <option key={i} value={i}>
+                  Signer {i + 1}
+                </option>
+              ))}
+            </select>
+          </label>
+          {selected.signType !== "date" && (
+            <label className="check-inline">
+              <input type="checkbox" checked={selected.required} onChange={(e) => onChange({ required: e.target.checked })} /> Required
+            </label>
+          )}
+          <button onClick={onDelete}>Delete</button>
+        </span>
+      )}
+      <button onClick={onRequests} title="Track documents you've sent, and use templates">
+        Sent requests
+      </button>
+      <button className="primary" disabled={!canSend} onClick={onSend} title={canSend ? "Choose who signs and send" : "Place at least one field first"}>
+        Send for signature…
+      </button>
+    </div>
   );
 }

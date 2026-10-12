@@ -3,7 +3,7 @@
 import { AnnotationMode, getDocument, GlobalWorkerOptions, OPS, type PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import { normalizeRotation, type DocState, type PageRef, type Source } from "./document";
-import type { FontKey, PageFrame } from "./objects";
+import { FONT_CSS, type FontKey, type PageFrame } from "./objects";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -397,6 +397,38 @@ export async function textRuns(doc: DocState, ref: PageRef): Promise<TextRun[]> 
     runs.push(run);
   }
   return [...runs, ...ocr];
+}
+
+let measureCtx: CanvasRenderingContext2D | null = null;
+
+/**
+ * Boxes around every match of `query` on the page (file text and OCR text),
+ * in unrotated page space. Used to redact search results.
+ */
+export async function findText(doc: DocState, ref: PageRef, query: string): Promise<{ x: number; y: number; w: number; h: number }[]> {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  measureCtx ??= document.createElement("canvas").getContext("2d");
+  const boxes: { x: number; y: number; w: number; h: number }[] = [];
+  for (const run of await textRuns(doc, ref)) {
+    const lower = run.text.toLowerCase();
+    // Where each character starts, from the closest standard font's widths scaled to the run.
+    const width = (s: string) => {
+      if (!measureCtx) return s.length;
+      measureCtx.font = `${run.bold ? 700 : 400} 100px ${FONT_CSS[run.font]}`;
+      return measureCtx.measureText(s).width;
+    };
+    const total = width(run.text) || 1;
+    const at = (i: number) => run.x + (width(run.text.slice(0, i)) / total) * run.w;
+    for (let i = lower.indexOf(q); i >= 0; i = lower.indexOf(q, i + q.length)) {
+      // A little margin, since the widths are estimates.
+      const pad = run.fontSize * 0.08;
+      const x0 = at(i) - pad;
+      const x1 = at(i + q.length) + pad;
+      boxes.push({ x: x0, y: run.y - pad, w: x1 - x0, h: run.h + pad * 2 });
+    }
+  }
+  return boxes;
 }
 
 /** Where an image is painted on the page (bounding box, unrotated page space, top-left origin). */
