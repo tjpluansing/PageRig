@@ -119,6 +119,28 @@ const EXPIRY = [
   { days: 90, label: "In 90 days" },
 ];
 
+const REMIND = [
+  { days: 0, label: "Off" },
+  { days: 2, label: "Every 2 days" },
+  { days: 3, label: "Every 3 days" },
+  { days: 7, label: "Every week" },
+];
+
+function RemindSelect({ value, onChange }: { value: number; onChange: (days: number) => void }) {
+  return (
+    <label className="inline-field" title="Emails a fresh link to anyone who hasn't signed yet, up to 5 times">
+      Automatic reminders{" "}
+      <select value={value} onChange={(e) => onChange(Number(e.target.value))}>
+        {REMIND.map((x) => (
+          <option key={x.days} value={x.days}>
+            {x.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 const EMAIL = /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/;
 
 /** Who signs, the email they get, and sending. */
@@ -129,6 +151,7 @@ export function SendDialog({ title: initialTitle, signerCount, onSend, onSaveTem
   const [ordered, setOrdered] = useState(false);
   const [message, setMessage] = useState("");
   const [expires, setExpires] = useState(14);
+  const [remind, setRemind] = useState(3);
   const [saveTemplate, setSaveTemplate] = useState(false);
   const [templateName, setTemplateName] = useState(initialTitle);
 
@@ -186,6 +209,7 @@ export function SendDialog({ title: initialTitle, signerCount, onSend, onSaveTem
             ))}
           </select>
         </label>
+        <RemindSelect value={remind} onChange={setRemind} />
         {!settings.senderEmail && <p className="muted small">Add your email in server settings to get replies and the signed copy.</p>}
       </fieldset>
       <label className="check-row">
@@ -211,6 +235,7 @@ export function SendDialog({ title: initialTitle, signerCount, onSend, onSaveTem
                 message: message.trim(),
                 ordered,
                 expiresDays: expires || null,
+                remindDays: remind || null,
                 signers: signers.map((s) => ({ name: s.name.trim(), email: s.email.trim() })),
               },
               templateName: saveTemplate ? templateName.trim() : null,
@@ -352,6 +377,7 @@ export function RequestsDialog({ onClose, onSettings, onDownload, flash }: Reque
                 <strong>{e.title}</strong>
                 <span className={`status status-${e.status}`}>{STATUS_LABELS[e.status] ?? e.status}</span>
                 <span className="muted small">{when(e.createdAt)}</span>
+                {e.status === "sent" && e.remindDays ? <span className="muted small">· reminds every {e.remindDays === 7 ? "week" : `${e.remindDays} days`}</span> : null}
               </div>
               <div className="request-signers">
                 {e.signers.map((s, i) => (
@@ -459,6 +485,7 @@ function UseTemplateDialog({ template, bulk, onClose, onDone }: UseTemplateProps
   const [signers, setSigners] = useState<Recipient[]>(() => template.roles.map(() => ({ name: "", email: "" })));
   const [list, setList] = useState("");
   const [message, setMessage] = useState(template.message);
+  const [remind, setRemind] = useState(3);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const parsed = bulk ? parseRecipients(list) : null;
@@ -475,10 +502,10 @@ function UseTemplateDialog({ template, bulk, onClose, onDone }: UseTemplateProps
     setError(null);
     try {
       if (bulk) {
-        const res = await signing.bulkSend(template.id, parsed!.recipients, { message });
+        const res = await signing.bulkSend(template.id, parsed!.recipients, { message, remindDays: remind || null });
         onDone(`Sent ${res.created} request${res.created === 1 ? "" : "s"}`);
       } else {
-        await signing.sendTemplate(template.id, { signers: signers.map((s) => ({ name: s.name.trim(), email: s.email.trim() })), message });
+        await signing.sendTemplate(template.id, { signers: signers.map((s) => ({ name: s.name.trim(), email: s.email.trim() })), message, remindDays: remind || null });
         onDone("Sent");
       }
     } catch (err) {
@@ -514,6 +541,7 @@ function UseTemplateDialog({ template, bulk, onClose, onDone }: UseTemplateProps
         ))
       )}
       <textarea className="message-input" rows={2} placeholder="Message (optional)" value={message} onChange={(e) => setMessage(e.target.value)} />
+      <RemindSelect value={remind} onChange={setRemind} />
       {(error || problem) && <p className="form-error">{error ?? problem}</p>}
       <div className="modal-actions">
         <span className="spacer" />

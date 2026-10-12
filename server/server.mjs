@@ -19,6 +19,7 @@
 //   MAX_MB          largest document accepted, in megabytes (default 50)
 //   TIMEOUT_S       longest a conversion may run, in seconds (default 120)
 //   CONCURRENCY     conversions run at once (default 2)
+//   SWEEP_MINUTES   how often to send automatic reminders and expire requests (default 60)
 //   SOFFICE         path to LibreOffice's soffice (default: soffice on the PATH)
 //   CHROMIUM        path to Chromium or Chrome, for saving web pages as PDF (/capture)
 //   CHROMIUM_NO_SANDBOX  set to 1 where Chromium's sandbox can't run (as in the Docker image)
@@ -176,4 +177,9 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     if (!signing.enabled) console.log("Signature requests are off. Set SIGN_API_KEY to turn them on.");
     if (!process.env.SMTP_URL) console.log("No SMTP_URL set, so signing emails are printed here instead of sent.");
   });
+  if (signing.enabled) {
+    const sweep = () => signing.sweep().catch((err) => console.error("Reminder sweep failed:", err));
+    setInterval(sweep, Math.max(1, Number(process.env.SWEEP_MINUTES ?? 60)) * 60_000).unref();
+    sweep();
+  }
 }

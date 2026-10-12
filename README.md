@@ -16,7 +16,7 @@ A PDF viewer and editor that runs in the browser and as a desktop app (Windows, 
 - **Password-protected files** open for editing in every standard encryption type. Files whose owner restricted changes need the permissions password to save.
 - **Convert:** open JPG, PNG, WebP, GIF and other images as PDF pages, and Word, Excel, PowerPoint, OpenDocument, RTF, text and HTML files as PDFs. Export pages as PNG or JPEG images (zipped in the browser), or as an editable Word document or PowerPoint presentation.
 - **Web pages:** open any public web page as a PDF, or add its pages to the document you're working on.
-- **Signature requests:** place signature, initials, date, name, text and checkbox fields for one or more signers, then send. Each signer gets an emailed link, signs in the browser (in order, if you choose), and everyone receives the signed PDF with a certificate page listing who signed, when and from where. Track progress, send reminders, cancel, and reuse documents as templates, including bulk sending one template to a list of people.
+- **Signature requests:** place signature, initials, date, name, text and checkbox fields for one or more signers, then send. Each signer gets an emailed link, signs in the browser (in order, if you choose), and everyone receives the signed PDF with a certificate page listing who signed, when and from where. Track progress, send reminders by hand or automatically every few days, cancel, and reuse documents as templates, including bulk sending one template to a list of people.
 - **Undo and redo** for every edit.
 - Files never leave your machine, except Office files on the web app and documents you send for signature, which go to your own PageRig server (see below). Pages are copied rather than re-rendered, so text stays selectable and file size stays small.
 
@@ -69,6 +69,7 @@ Then open the site, choose **Request signatures**, and enter the server address 
 | `CHROMIUM`, `CHROMIUM_NO_SANDBOX` | Chromium for saving web pages (set in the Docker image). Saving web pages needs the API key too. |
 | `CAPTURE_ALLOW_PRIVATE` | Set to `1` to allow saving pages on private networks, such as an intranet. Off by default so the server can't be used to reach internal addresses. |
 | `MAX_MB`, `TIMEOUT_S`, `CONCURRENCY` | Limits on document size, conversion time and parallel conversions. |
+| `SWEEP_MINUTES` | How often automatic reminders go out and overdue requests expire (default 60). |
 
 To run it without Docker: install LibreOffice (for conversion), then `cd server && npm install && SIGN_API_KEY=... npm start`, and build the web app with `VITE_SERVER_URL=http://your-server npm run build`. The desktop app converts Office files with LibreOffice installed on the computer instead (found on the PATH or in its usual folder, or set `PAGERIG_SOFFICE`), and saves web pages with the Chrome, Edge or Chromium installed there (or set `PAGERIG_CHROMIUM`).
 
