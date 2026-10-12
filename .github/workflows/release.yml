@@ -46,7 +46,12 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libxdo-dev
       - run: npm ci
       - name: Build installers
-        run: npx tauri build ${{ matrix.args }}
+        run: npx tauri build --verbose ${{ matrix.args }}
+        env:
+          # linuxdeploy's bundled strip is too old for some system libraries,
+          # and it runs without FUSE when it unpacks itself instead.
+          NO_STRIP: "true"
+          APPIMAGE_EXTRACT_AND_RUN: "1"
       - uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.os }}
