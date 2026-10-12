@@ -21,11 +21,22 @@ interface Base {
   rot: Rotation;
 }
 
+export type FontKey = "helvetica" | "times" | "courier";
+
+export const FONT_CSS: Record<FontKey, string> = {
+  helvetica: "Helvetica, Arial, sans-serif",
+  times: '"Times New Roman", Times, serif',
+  courier: '"Courier New", Courier, monospace',
+};
+
 export interface TextObject extends Base {
   kind: "text";
   text: string;
   fontSize: number;
   color: string;
+  /** Defaults to Helvetica. Edited text picks the closest match to the original. */
+  font?: FontKey;
+  bold?: boolean;
   /** Drawn as a bordered, bold, uppercase stamp. */
   stamp?: boolean;
 }
@@ -54,7 +65,68 @@ export interface FieldObject extends Base {
   options?: string[];
 }
 
-export type PageObject = TextObject | ImageObject | MarkObject | FieldObject;
+/** A filled rectangle, used to cover original text or images that were edited or removed. */
+export interface RectObject extends Base {
+  kind: "rect";
+  fill: string;
+}
+
+/**
+ * An area marked for redaction. Shown as an outline while editing; when saved,
+ * everything under it is permanently removed and it becomes a solid black box.
+ */
+export interface RedactObject extends Base {
+  kind: "redact";
+}
+
+export type SignFieldType = "signature" | "initials" | "date" | "name" | "text" | "checkbox";
+
+/**
+ * A place for someone else to sign or fill in, when sending the document for
+ * signature. Not drawn when saving; sent to the signing service instead.
+ */
+export interface SignFieldObject extends Base {
+  kind: "sign";
+  signType: SignFieldType;
+  /** Which signer fills it in, counting from 0. */
+  signer: number;
+  required: boolean;
+}
+
+export const SIGN_FIELD_SIZES: Record<SignFieldType, { w: number; h: number }> = {
+  signature: { w: 160, h: 40 },
+  initials: { w: 60, h: 30 },
+  date: { w: 110, h: 20 },
+  name: { w: 160, h: 20 },
+  text: { w: 160, h: 20 },
+  checkbox: { w: 16, h: 16 },
+};
+
+export const SIGN_FIELD_LABELS: Record<SignFieldType, string> = {
+  signature: "Signature",
+  initials: "Initials",
+  date: "Date signed",
+  name: "Name",
+  text: "Text",
+  checkbox: "Checkbox",
+};
+
+/** One colour per signer, repeating after eight. */
+export const SIGNER_COLORS = ["#2563eb", "#d97706", "#059669", "#db2777", "#7c3aed", "#0891b2", "#65a30d", "#dc2626"];
+export const signerColor = (i: number) => SIGNER_COLORS[i % SIGNER_COLORS.length];
+
+export type PageObject = TextObject | ImageObject | MarkObject | FieldObject | RectObject | RedactObject | SignFieldObject;
+
+/** A line of text found by OCR on a scanned page, in unrotated page space (points, top-left origin). */
+export interface OcrLine {
+  text: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Baseline, measured from the top of the page. */
+  baseline: number;
+}
 
 export type FieldValue = string | boolean;
 

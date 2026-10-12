@@ -3,7 +3,8 @@
 // list, so they are cheap, undoable, and never re-encode the source files.
 // A real PDF is only produced when exporting (see export.ts).
 
-import type { FieldValue, PageObject } from "./objects";
+import type { FieldValue, OcrLine, PageObject } from "./objects";
+import type { Permissions } from "./security";
 
 export type Rotation = 0 | 90 | 180 | 270;
 
@@ -20,8 +21,14 @@ export interface Source {
   name: string;
   bytes: Uint8Array;
   pageCount: number;
-  /** Encrypted files can be viewed but not yet re-saved. */
+  /** Encrypted with a scheme PageRig can view but not decrypt; can't be saved. */
   encrypted?: boolean;
+  /** The owner restricted changes; saving needs the permissions password. */
+  restricted?: Permissions;
+  /** The original encrypted file, to check the permissions password against. */
+  locked?: Uint8Array;
+  /** The password the file was opened with, if it needed one. */
+  openPassword?: string;
 }
 
 export interface PageRef {
@@ -38,6 +45,8 @@ export interface PageRef {
   blankSize?: { width: number; height: number };
   /** Text, marks, images and new form fields placed on the page (see objects.ts). */
   objects?: PageObject[];
+  /** Text recognised on a scanned page; saved as an invisible, searchable layer. */
+  ocr?: OcrLine[];
 }
 
 export interface DocState {
@@ -193,4 +202,8 @@ export function cropFromDisplay(display: Crop, rotation: number): Crop {
 /** Inverse of cropFromDisplay. */
 export function cropToDisplay(stored: Crop, rotation: number): Crop {
   return cropFromDisplay(stored, 360 - normalizeRotation(rotation));
+}
+
+export function setOcr(doc: DocState, pageId: string, ocr: OcrLine[]): DocState {
+  return { ...doc, pages: doc.pages.map((p) => (p.id === pageId ? { ...p, ocr } : p)) };
 }

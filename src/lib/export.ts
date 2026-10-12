@@ -22,21 +22,40 @@ import {
   TEXT_PAD,
   type FieldObject,
   type ImageObject,
+  type FontKey,
   type MarkObject,
+  type OcrLine,
   type PageObject,
+  type RectObject,
+  type RedactObject,
   type TextObject,
 } from "./objects";
+import { removeUnreachable } from "./pdfgc";
+import { applyRedactions, type CanvasFactory, type RedactBox } from "./redact";
+import { NO_SANITIZE, sanitizePdf, type SanitizeOptions } from "./sanitize";
+import { protectPdf, type Protection } from "./security";
+
+export interface ExportOptions {
+  /** Password-protect the saved file. */
+  protection?: Protection | null;
+  /** Hidden information to strip. */
+  sanitize?: SanitizeOptions;
+  /** Where redacted pages are rendered; defaults to a DOM canvas. */
+  makeCanvas?: CanvasFactory;
+}
 
 /**
  * Build a PDF from the given pages of the working document.
  * Pages are copied (not rasterized), so text stays selectable and file size stays small.
  * Existing form fields stay fillable, and placed objects are drawn into the page.
  */
-export async function exportPdf(doc: DocState, pages: PageRef[] = doc.pages): Promise<Uint8Array> {
+export async function exportPdf(doc: DocState, pages: PageRef[] = doc.pages, options: ExportOptions = {}): Promise<Uint8Array> {
   const out = await PDFDocument.create();
   const ctx = new ExportContext(out);
+  const sanitize = options.sanitize ?? NO_SANITIZE;
+  const redactions = new Map<number, RedactBox[]>();
 
-  for (const ref of pages) {
+  for (const [index, ref] of pages.entries()) {
     let page: PDFPage;
     if (ref.sourceId === null) {
       const size = ref.blankSize ?? { width: 595.28, height: 841.89 };
@@ -48,20 +67,56 @@ export async function exportPdf(doc: DocState, pages: PageRef[] = doc.pages): Pr
       [page] = await out.copyPages(src, [ref.sourceIndex]);
       out.addPage(page);
       ctx.keepFormFields(page, src);
+      pointAnnotsAt(page);
     }
-    for (const obj of ref.objects ?? []) await ctx.draw(page, obj);
+    if (ref.ocr?.length) await ctx.drawOcr(page, ref.ocr);
+    for (const obj of ref.objects ?? []) {
+      await ctx.draw(page, obj);
+      if (obj.kind === "redact") addBox(redactions, index, redactBox(page, obj, [0, 0, 0]));
+      if (obj.kind === "rect" && sanitize.covered) addBox(redactions, index, redactBox(page, obj, colorParts(obj.fill)));
+    }
     applyRotationAndCrop(page, ref);
   }
 
   ctx.fillValues(doc);
-  return ctx.save();
+  let bytes = await ctx.save();
+  bytes = await applyRedactions(bytes, redactions, options.makeCanvas);
+  bytes = await sanitizePdf(bytes, sanitize);
+  if (options.protection) bytes = await protectPdf(bytes, options.protection);
+  return bytes;
+}
+
+/**
+ * Annotations name their page in /P. After copying, that still points at the
+ * source page, which drags a second copy of it into the file; point it here.
+ */
+function pointAnnotsAt(page: PDFPage) {
+  const annots = page.node.Annots();
+  if (!annots) return;
+  for (let i = 0; i < annots.size(); i++) {
+    const annot = page.doc.context.lookupMaybe(annots.get(i), PDFDict);
+    if (annot?.has(PDFName.of("P"))) annot.set(PDFName.of("P"), page.ref);
+  }
+}
+
+function addBox(map: Map<number, RedactBox[]>, index: number, box: RedactBox) {
+  map.set(index, [...(map.get(index) ?? []), box]);
+}
+
+/** An object's bounding box in PDF user space. */
+function redactBox(page: PDFPage, obj: PageObject, fill: [number, number, number]): RedactBox {
+  const place = placer(page, obj);
+  const corners = [place(0, 0), place(obj.w, 0), place(0, obj.h), place(obj.w, obj.h)];
+  const xs = corners.map((c) => c.x);
+  const ys = corners.map((c) => c.y);
+  return { x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys), fill };
 }
 
 /** Export each group of page indexes as its own PDF. */
-export async function exportGroups(doc: DocState, groups: number[][]): Promise<Uint8Array[]> {
+export async function exportGroups(doc: DocState, groups: number[][], options: ExportOptions = {}): Promise<Uint8Array[]> {
   const results: Uint8Array[] = [];
   for (const group of groups) {
-    results.push(await exportPdf(doc, group.map((i) => doc.pages[i])));
+    results.push(await exportPdf(doc, group.map((i) => doc.pages[i]), options));
   }
   return results;
 }
@@ -165,6 +220,8 @@ class ExportContext {
   }
 
   async save(): Promise<Uint8Array> {
+    // Drop anything copied along that no page uses, such as the source pages annotations pointed back to.
+    removeUnreachable(this.out);
     try {
       return await this.out.save();
     } catch (err) {
@@ -186,7 +243,39 @@ class ExportContext {
         return this.drawMark(page, obj, place);
       case "field":
         return this.addField(page, obj, place);
+      case "rect":
+        return this.drawRect(page, obj, place);
+      case "redact":
+        return this.drawRedact(page, obj, place);
+      case "sign":
+        // Placeholders for signers; the signing service fills them in.
+        return;
     }
+  }
+
+  /** OCR text goes in as an invisible layer, so scans become searchable and selectable. */
+  async drawOcr(page: PDFPage, lines: OcrLine[]) {
+    const font = await this.font(StandardFonts.Helvetica);
+    const box = page.getCropBox();
+    for (const line of lines) {
+      const text = encodable(font, line.text);
+      const natural = font.widthOfTextAtSize(text, 10);
+      if (!natural) continue;
+      // Size the text so its width matches the scanned words, which keeps selection aligned.
+      const size = Math.max(1, Math.min(line.h * 1.5, (10 * line.w) / natural));
+      page.drawText(text, { x: box.x + line.x, y: box.y + box.height - line.baseline, size, font, opacity: 0 });
+    }
+  }
+
+  private drawRect(page: PDFPage, obj: RectObject, place: Placer) {
+    const ll = place(0, obj.h);
+    page.drawRectangle({ x: ll.x, y: ll.y, width: obj.w, height: obj.h, rotate: degrees(obj.rot), color: parseColor(obj.fill) });
+  }
+
+  /** Drawn solid black; applyRedactions then removes what was underneath. */
+  private drawRedact(page: PDFPage, obj: RedactObject, place: Placer) {
+    const ll = place(0, obj.h);
+    page.drawRectangle({ x: ll.x, y: ll.y, width: obj.w, height: obj.h, rotate: degrees(obj.rot), color: rgb(0, 0, 0) });
   }
 
   private async font(name: StandardFonts) {
@@ -199,7 +288,7 @@ class ExportContext {
   }
 
   private async drawText(page: PDFPage, obj: TextObject, place: Placer) {
-    const font = await this.font(obj.stamp ? StandardFonts.HelveticaBold : StandardFonts.Helvetica);
+    const font = await this.font(obj.stamp ? StandardFonts.HelveticaBold : standardFont(obj.font, obj.bold));
     const color = parseColor(obj.color);
     if (obj.stamp) {
       const ll = place(0, obj.h);
@@ -314,10 +403,14 @@ function encodable(font: PDFFont, text: string): string {
   return result;
 }
 
-function parseColor(hex: string) {
+function colorParts(hex: string): [number, number, number] {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex);
   const n = m ? parseInt(m[1], 16) : 0;
-  return rgb(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+function parseColor(hex: string) {
+  return rgb(...colorParts(hex));
 }
 
 function decodeDataUrl(url: string): { bytes: Uint8Array; mime: string } {
@@ -327,4 +420,10 @@ function decodeDataUrl(url: string): { bytes: Uint8Array; mime: string } {
   const bytes = new Uint8Array(data.length);
   for (let i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i);
   return { bytes, mime: m[1] };
+}
+
+function standardFont(font: FontKey = "helvetica", bold = false): StandardFonts {
+  if (font === "times") return bold ? StandardFonts.TimesRomanBold : StandardFonts.TimesRoman;
+  if (font === "courier") return bold ? StandardFonts.CourierBold : StandardFonts.Courier;
+  return bold ? StandardFonts.HelveticaBold : StandardFonts.Helvetica;
 }

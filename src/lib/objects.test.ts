@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { PDFDocument } from "pdf-lib";
+import { PDFArray, PDFDict, PDFDocument, PDFName } from "pdf-lib";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
-import { addSource, emptyDoc, rotatePages, type DocState, type Rotation, type Source } from "./document";
+import { addSource, emptyDoc, rotatePages, setOcr, type DocState, type Rotation, type Source } from "./document";
 import { exportPdf } from "./export";
 import {
   addObject,
@@ -14,6 +14,7 @@ import {
   type ImageObject,
   type MarkObject,
   type PageFrame,
+  type RectObject,
   type TextObject,
 } from "./objects";
 
@@ -45,6 +46,24 @@ async function textItems(bytes: Uint8Array, pageNumber = 1) {
   const page = await pdf.getPage(pageNumber);
   const content = await page.getTextContent();
   return content.items.flatMap((i) => ("str" in i && i.str.trim() ? [{ str: i.str, x: i.transform[4], y: i.transform[5] }] : []));
+}
+
+/** Every value stored under `key` in the file's dictionaries, including ones nested inline, as strings. */
+async function dictValues(bytes: Uint8Array, key: string): Promise<string[]> {
+  const pdf = await PDFDocument.load(bytes);
+  const out: string[] = [];
+  const walk = (obj: unknown) => {
+    if (obj instanceof PDFDict) {
+      for (const [k, v] of obj.entries()) {
+        if (k === PDFName.of(key)) out.push(v.toString());
+        walk(v);
+      }
+    } else if (obj instanceof PDFArray) {
+      for (const v of obj.asArray()) walk(v);
+    }
+  };
+  for (const [, obj] of pdf.context.enumerateIndirectObjects()) walk(obj);
+  return out;
 }
 
 const text = (fields: Partial<TextObject> = {}) =>
@@ -147,5 +166,29 @@ describe("forms", () => {
     // Centred where it was placed (pdf-lib grows the rectangle by the border width).
     expect(widget.x + widget.width / 2).toBeCloseTo(200);
     expect(widget.y + widget.height / 2).toBeCloseTo(700);
+  });
+});
+
+describe("editing", () => {
+  it("covers original content and draws replacement text in the matching font", async () => {
+    let doc: DocState = addSource(emptyDoc, await blankSource());
+    const id = doc.pages[0].id;
+    doc = addObject(doc, id, makeObject<RectObject>({ kind: "rect", fill: "#ffffff", cx: 100, cy: 50, w: 80, h: 14, rot: 0 }));
+    doc = addObject(doc, id, text({ text: "Edited", font: "times", bold: true }));
+    const bytes = await exportPdf(doc);
+    expect(await dictValues(bytes, "BaseFont")).toContain("/Times-Bold");
+    expect((await textItems(bytes)).map((i) => i.str)).toEqual(["Edited"]);
+  });
+
+  it("saves OCR text as an invisible, searchable layer", async () => {
+    let doc: DocState = addSource(emptyDoc, await blankSource());
+    doc = setOcr(doc, doc.pages[0].id, [{ text: "Scanned invoice 42", x: 50, y: 90, w: 150, h: 14, baseline: 101 }]);
+    const bytes = await exportPdf(doc);
+    const items = await textItems(bytes);
+    expect(items.map((i) => i.str)).toEqual(["Scanned invoice 42"]);
+    expect(items[0].x).toBeCloseTo(50);
+    expect(items[0].y).toBeCloseTo(800 - 101);
+    // Drawn with zero opacity so it doesn't cover the scan.
+    expect(await dictValues(bytes, "ca")).toContain("0");
   });
 });
