@@ -14,7 +14,7 @@ import { PageCanvas } from "./PageCanvas";
 
 const MM_PER_PT = 25.4 / 72;
 
-function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
+export function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const el = ref.current;

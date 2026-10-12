@@ -12,6 +12,8 @@ import { CSS } from "@dnd-kit/utilities";
 import type { MouseEvent } from "react";
 import type { DocState, PageRef } from "../lib/document";
 import { PageCanvas } from "./PageCanvas";
+import { PageOverlay } from "./PageOverlay";
+import { displaySize } from "../lib/render";
 
 const THUMB_WIDTH = 132;
 
@@ -90,7 +92,9 @@ function Thumb({ doc, page, index, isSelected, isCurrent, onSelect, onOpen }: Th
       aria-label={`Page ${index + 1}`}
       aria-selected={isSelected}
     >
-      <PageCanvas doc={doc} page={page} width={THUMB_WIDTH} rootMargin="300px" />
+      <PageCanvas doc={doc} page={page} width={THUMB_WIDTH} rootMargin="300px">
+        <PageOverlay doc={doc} page={page} scale={THUMB_WIDTH / displaySize(page).width} />
+      </PageCanvas>
       <span className="thumb-label">{index + 1}</span>
     </li>
   );

@@ -14,16 +14,51 @@ import {
 } from "./lib/document";
 import { exportGroups, exportPdf } from "./lib/export";
 import { pickPdfs, readBrowserFiles, savePdf, savePdfs, type PickedFile } from "./lib/platform";
-import { displaySize, inspectPdf, registerSource, searchDoc, type SearchHit } from "./lib/render";
+import { displaySize, inspectPdf, pageFrame, registerSource, searchDoc, sourceFieldNames, type SearchHit } from "./lib/render";
+import {
+  addObject,
+  makeObject,
+  removeObject,
+  rotateVec,
+  setFieldValue,
+  uniqueFieldName,
+  updateObject,
+  type FieldObject,
+  type ImageObject,
+  type MarkObject,
+  type PageObject,
+  type TextObject,
+} from "./lib/objects";
 import { useHistory } from "./lib/useHistory";
 import { Thumbnails } from "./components/Thumbnails";
 import { PageCanvas } from "./components/PageCanvas";
 import { CropDialog, SplitDialog } from "./components/Dialogs";
+import { PageOverlay, sizeText, type OverlayHandlers } from "./components/PageOverlay";
+import { imageSize, readImageFile, SignatureDialog, type SignatureRole } from "./components/SignatureDialog";
+import { STAMPS, ToolBar, type Stamp, type Tool } from "./components/ToolBar";
 
 const PX_PER_PT = 96 / 72;
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4];
 
 type Dialog = null | "crop" | "split";
+
+const SIG_KEYS: Record<SignatureRole, string> = { signature: "pagerig.signature", initials: "pagerig.initials" };
+
+function loadSaved(role: SignatureRole): string | null {
+  try {
+    return localStorage.getItem(SIG_KEYS[role]);
+  } catch {
+    return null;
+  }
+}
+
+function storeSaved(role: SignatureRole, url: string) {
+  try {
+    localStorage.setItem(SIG_KEYS[role], url);
+  } catch {
+    // Storage can be unavailable (private windows); the signature still works for this session.
+  }
+}
 
 export default function App() {
   const history = useHistory<DocState>(emptyDoc);
@@ -41,6 +76,17 @@ export default function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ kind: "error" | "info"; text: string } | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [tool, setTool] = useState<Tool>("select");
+  const [stamp, setStamp] = useState<Stamp>(STAMPS[0]);
+  const [picked, setPicked] = useState<{ pageId: string; objId: string } | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [signatures, setSignatures] = useState<Record<SignatureRole, string | null>>(() => ({
+    signature: loadSaved("signature"),
+    initials: loadSaved("initials"),
+  }));
+  const [sigDialog, setSigDialog] = useState<SignatureRole | null>(null);
+  const [pendingImage, setPendingImage] = useState<string | null>(null);
+  const [takenNames, setTakenNames] = useState<Set<string>>(new Set());
 
   const viewerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -72,6 +118,147 @@ export default function App() {
     const t = setTimeout(() => setMessage(null), message.kind === "error" ? 8000 : 3500);
     return () => clearTimeout(t);
   }, [message]);
+
+  // ---- Fill & sign -------------------------------------------------------
+
+  useEffect(() => {
+    let live = true;
+    sourceFieldNames(doc)
+      .then((names) => live && setTakenNames(names))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [doc.sources]);
+
+  const pickedObject = useMemo(() => {
+    if (!picked) return null;
+    return doc.pages.find((p) => p.id === picked.pageId)?.objects?.find((o) => o.id === picked.objId) ?? null;
+  }, [doc.pages, picked]);
+
+  const chooseTool = async (next: Tool) => {
+    setPicked(null);
+    setEditing(null);
+    if ((next === "signature" || next === "initials") && !signatures[next]) {
+      setSigDialog(next);
+      return;
+    }
+    if (next === "image") {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/png,image/jpeg,image/webp";
+      input.onchange = async () => {
+        const url = await readImageFile(input.files?.[0]).catch(() => null);
+        if (!url) return;
+        setPendingImage(url);
+        setTool("image");
+      };
+      input.click();
+      return;
+    }
+    setTool(next);
+  };
+
+  const placeObject = async (pageId: string, x: number, y: number) => {
+    const page = doc.pages.find((p) => p.id === pageId);
+    if (!page) return;
+    const rot = pageFrame(page).rotation;
+    const at = { cx: x, cy: y, rot };
+    let obj: PageObject | null = null;
+
+    const textObj = (text: string, extra: Partial<TextObject> = {}) => {
+      const t = { text, fontSize: 12, color: "#000000", ...extra };
+      // Place the text box with its top-left at the click, which feels natural for typing.
+      const size = sizeText(t);
+      const shift = rotateVec(size.w / 2, size.h / 2, -rot);
+      return makeObject<TextObject>({ kind: "text", ...t, ...size, rot, cx: x + shift.x, cy: y + shift.y });
+    };
+
+    switch (tool) {
+      case "text":
+        obj = textObj("Text");
+        break;
+      case "date":
+        obj = textObj(new Date().toLocaleDateString());
+        break;
+      case "stamp":
+        obj = textObj(stamp.text, { stamp: true, color: stamp.color, fontSize: 18 });
+        // Stamps are centred on the click.
+        obj = { ...obj, cx: x, cy: y };
+        break;
+      case "check":
+      case "cross":
+      case "dot":
+        obj = makeObject<MarkObject>({ kind: "mark", mark: tool, color: "#000000", w: 14, h: 14, ...at });
+        break;
+      case "signature":
+      case "initials":
+      case "image": {
+        const src = tool === "image" ? pendingImage : signatures[tool];
+        if (!src) return;
+        const px = await imageSize(src);
+        const width = tool === "signature" ? 150 : tool === "initials" ? 60 : Math.min(240, px.width * 0.75);
+        const height = (width * px.height) / px.width;
+        obj = makeObject<ImageObject>({ kind: "image", src, role: tool, w: width, h: height, ...at });
+        break;
+      }
+      case "field-text":
+        obj = makeObject<FieldObject>({ kind: "field", fieldType: "text", name: uniqueFieldName(doc, "Text", takenNames), w: 150, h: 20, ...at });
+        break;
+      case "field-checkbox":
+        obj = makeObject<FieldObject>({ kind: "field", fieldType: "checkbox", name: uniqueFieldName(doc, "Check", takenNames), w: 14, h: 14, ...at });
+        break;
+      case "field-dropdown":
+        obj = makeObject<FieldObject>({
+          kind: "field",
+          fieldType: "dropdown",
+          name: uniqueFieldName(doc, "Choice", takenNames),
+          options: ["Option 1", "Option 2"],
+          w: 120,
+          h: 20,
+          ...at,
+        });
+        break;
+      default:
+        return;
+    }
+    const placed = obj;
+    history.set((d) => addObject(d, pageId, placed));
+    setPicked({ pageId, objId: placed.id });
+    if (tool === "text") setEditing(placed.id);
+    // Marks stay active so a column of boxes can be ticked quickly; everything else goes back to Select.
+    if (!["check", "cross", "dot"].includes(tool)) setTool("select");
+  };
+
+  const overlayHandlers: OverlayHandlers = {
+    placing: tool !== "select",
+    selectedId: picked?.objId ?? null,
+    editingId: editing,
+    onSelect: (pageId, objId) => setPicked(objId ? { pageId, objId } : null),
+    onEdit: setEditing,
+    onPlace: placeObject,
+    onChange: (pageId, objId, patch) => history.set((d) => updateObject(d, pageId, objId, patch)),
+    onRemove: (pageId, objId) => {
+      history.set((d) => removeObject(d, pageId, objId));
+      setPicked(null);
+    },
+    onFieldValue: (sourceId, name, value) => history.set((d) => setFieldValue(d, sourceId, name, value)),
+  };
+
+  const changePicked = (patch: Partial<PageObject>) => {
+    if (!picked || !pickedObject) return;
+    let full = patch;
+    if (pickedObject.kind === "text" && "fontSize" in patch) {
+      full = { ...patch, ...sizeText({ ...pickedObject, ...(patch as Partial<TextObject>) }) };
+    }
+    history.set((d) => updateObject(d, picked.pageId, picked.objId, full));
+  };
+
+  const deletePicked = () => {
+    if (!picked) return;
+    history.set((d) => removeObject(d, picked.pageId, picked.objId));
+    setPicked(null);
+  };
 
   // ---- Loading -----------------------------------------------------------
 
@@ -334,11 +521,17 @@ export default function App() {
       } else if (mod && e.key.toLowerCase() === "a" && hasDoc) {
         e.preventDefault();
         setSelected(new Set(doc.pages.map((p) => p.id)));
+      } else if ((e.key === "Delete" || e.key === "Backspace") && picked) {
+        e.preventDefault();
+        deletePicked();
       } else if ((e.key === "Delete" || e.key === "Backspace") && selected.size > 0) {
         e.preventDefault();
         remove();
       } else if (e.key === "Escape") {
-        setSelected(new Set());
+        if (tool !== "select" || picked) {
+          setTool("select");
+          setPicked(null);
+        } else setSelected(new Set());
       } else if (mod && (e.key === "=" || e.key === "+")) {
         e.preventDefault();
         stepZoom(1);
@@ -441,6 +634,19 @@ export default function App() {
           onKeyDown={(e) => e.key === "Enter" && hits?.[0] && scrollToPage(hits[0].pageId)}
         />
       </header>
+      {hasDoc && (
+        <ToolBar
+          tool={tool}
+          onTool={chooseTool}
+          stamp={stamp}
+          onStamp={setStamp}
+          hasSignature={{ signature: !!signatures.signature, initials: !!signatures.initials }}
+          onRedoSignature={setSigDialog}
+          selected={pickedObject}
+          onChange={changePicked}
+          onDelete={deletePicked}
+        />
+      )}
 
       {!hasDoc ? (
         <main className="empty">
@@ -499,7 +705,9 @@ export default function App() {
                   className={`page${hitIds.has(page.id) ? " hit" : ""}${selected.has(page.id) ? " selected" : ""}`}
                   data-testid="page"
                 >
-                  <PageCanvas doc={doc} page={page} width={w} />
+                  <PageCanvas doc={doc} page={page} width={w}>
+                    <PageOverlay doc={doc} page={page} scale={w / displaySize(page).width} handlers={overlayHandlers} />
+                  </PageCanvas>
                   <div className="page-number">{i + 1}</div>
                 </div>
               );
@@ -548,6 +756,19 @@ export default function App() {
       )}
       {dialog === "split" && (
         <SplitDialog pageCount={doc.pages.length} onSplit={split} onClose={() => setDialog(null)} />
+      )}
+
+      {sigDialog && (
+        <SignatureDialog
+          role={sigDialog}
+          onClose={() => setSigDialog(null)}
+          onDone={(url, remember) => {
+            if (remember) storeSaved(sigDialog, url);
+            setSignatures((s) => ({ ...s, [sigDialog]: url }));
+            setTool(sigDialog);
+            setSigDialog(null);
+          }}
+        />
       )}
 
       {busy && <div className="busy">{busy}</div>}
@@ -610,3 +831,4 @@ function highlight(text: string, query: string) {
   const parts = text.split(new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "ig"));
   return parts.map((part, i) => (i % 2 === 1 ? <mark key={i}>{part}</mark> : part));
 }
+

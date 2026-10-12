@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { DocState, PageRef } from "../lib/document";
 import { displaySize, renderPage } from "../lib/render";
 
@@ -8,10 +8,12 @@ interface Props {
   width: number;
   /** Extra margin around the viewport in which pages start rendering early. */
   rootMargin?: string;
+  /** Drawn on top of the page, e.g. the object overlay. */
+  children?: ReactNode;
 }
 
 /** A page that renders itself only once it scrolls near the viewport. */
-export function PageCanvas({ doc, page, width, rootMargin = "600px" }: Props) {
+export function PageCanvas({ doc, page, width, rootMargin = "600px", children }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [visible, setVisible] = useState(false);
@@ -48,6 +50,7 @@ export function PageCanvas({ doc, page, width, rootMargin = "600px" }: Props) {
     <div ref={wrapRef} className="page-canvas" style={{ width, height }}>
       {!rendered && <div className="page-placeholder" />}
       <canvas ref={canvasRef} style={{ width, height, display: rendered ? "block" : "none" }} />
+      {children}
     </div>
   );
 }
