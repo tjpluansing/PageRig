@@ -7,6 +7,14 @@ import { basename, join } from "node:path";
 const [dir, tag, repo] = process.argv.slice(2);
 if (!dir || !tag || !repo) throw new Error("Usage: update-manifest.mjs <dir> <tag> <owner/repo>");
 
+// Installed copies refuse an update whose signature names a different version,
+// so the tag has to match the version the app was built as.
+const built = JSON.parse(readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8")).version;
+const version = tag.replace(/^v/, "");
+if (!tag.startsWith("v0.0.0-") && version !== built) {
+  throw new Error(`Tag ${tag} doesn't match the app version ${built} in src-tauri/tauri.conf.json.`);
+}
+
 // Platform keys the updater looks for, by installer. It tries "<os>-<arch>-<installer>"
 // first, then "<os>-<arch>", so the plain key is the default for that system.
 const KINDS = [
@@ -34,7 +42,7 @@ for (const kind of KINDS) {
 }
 
 const manifest = {
-  version: tag.replace(/^v/, ""),
+  version,
   notes: `See what's new at https://github.com/${repo}/releases/tag/${tag}`,
   pub_date: new Date().toISOString(),
   platforms,
