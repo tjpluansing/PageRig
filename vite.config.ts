@@ -4,6 +4,7 @@ import { defineConfig, type Plugin } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 const require = createRequire(import.meta.url);
+const { version } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string };
 
 /**
  * Serve the OCR engine and English language data from the app itself instead
@@ -39,6 +40,8 @@ function tesseractAssets(): Plugin {
 // Tauri expects a fixed port and doesn't want the screen cleared.
 export default defineConfig({
   plugins: [react(), tesseractAssets()],
+  // Shown under Help, About PageRig.
+  define: { __APP_VERSION__: JSON.stringify(version) },
   clearScreen: false,
   server: { port: 1420, strictPort: true },
   envPrefix: ["VITE_", "TAURI_ENV_"],

@@ -57,13 +57,21 @@ import { PageCanvas } from "./components/PageCanvas";
 import { CropDialog, SplitDialog } from "./components/Dialogs";
 import { PageOverlay, sizeText, type OverlayHandlers } from "./components/PageOverlay";
 import { imageSize, readImageFile, SignatureDialog, type SignatureRole } from "./components/SignatureDialog";
-import { RequestBar, STAMPS, ToolBar, type Stamp, type Tool } from "./components/ToolBar";
+import { ContextBar, RequestBar, STAMPS, type Stamp, type Tool } from "./components/ToolBar";
 import { DEFAULT_SAVE_SETTINGS, isProtectedSave, ProtectDialog, type SaveSettings } from "./components/ProtectDialog";
+import { COMMANDS, MENUS, commandForKey, type CommandId } from "./lib/commands";
+import { installNativeMenu, type NativeMenu } from "./lib/nativeMenu";
+import { isDesktop } from "./lib/platform";
+import { ContextMenu, MenuBar, type CommandState } from "./components/MenuBar";
+import { NavRail, QuickTools, Tabs } from "./components/Workbench";
+import { SidePanel, type Panel } from "./components/Panels";
+import { AboutDialog, ShortcutsDialog } from "./components/HelpDialogs";
+import { Icon } from "./components/Icons";
 
 const PX_PER_PT = 96 / 72;
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4];
 
-type Dialog = null | "crop" | "split" | "protect" | "export" | "print" | "send" | "requests" | "server" | "web" | "certify" | "signatures";
+type Dialog = null | "crop" | "split" | "protect" | "export" | "print" | "send" | "requests" | "server" | "web" | "certify" | "signatures" | "about" | "shortcuts";
 
 const SIG_KEYS: Record<SignatureRole, string> = { signature: "pagerig.signature", initials: "pagerig.initials" };
 
@@ -74,6 +82,60 @@ function loadSaved(role: SignatureRole): string | null {
     return null;
   }
 }
+
+/** Which side panels are open is remembered between visits. */
+function storeOpenPanel(panel: Panel | null) {
+  try {
+    localStorage.setItem("pagerig.panel.left", panel ?? "none");
+  } catch {
+    // Not remembered this time.
+  }
+}
+
+function loadPanel(key: string, fallback: boolean): boolean {
+  try {
+    const v = localStorage.getItem(`pagerig.panel.${key}`);
+    return v === null ? fallback : v === "1";
+  } catch {
+    return fallback;
+  }
+}
+
+function storePanel(key: string, open: boolean) {
+  try {
+    localStorage.setItem(`pagerig.panel.${key}`, open ? "1" : "0");
+  } catch {
+    // Not remembered this time; nothing else depends on it.
+  }
+}
+
+/** The menu and tool-panel commands that are tools, and the tool each picks. */
+const TOOL_COMMANDS: Partial<Record<CommandId, Tool>> = {
+  "edit-text": "edit-text",
+  "edit-image": "edit-image",
+  "add-text": "text",
+  "add-image": "image",
+  redact: "redact",
+  signature: "signature",
+  initials: "initials",
+  stamp: "stamp",
+  "form-fields": "field-text",
+};
+
+const PANELS: ReadonlySet<string> = new Set(["all", "edit", "convert", "esign", "pages", "protect"]);
+
+function loadOpenPanel(): Panel | null {
+  try {
+    const v = localStorage.getItem("pagerig.panel.left");
+    if (v === "none") return null;
+    return v && PANELS.has(v) ? (v as Panel) : "all";
+  } catch {
+    return "all";
+  }
+}
+
+/** Commands that work with no document open. */
+const WITHOUT_DOC: ReadonlySet<CommandId> = new Set(["open", "open-web", "quit", "sent-requests", "server-settings", "shortcuts", "check-updates", "about"]);
 
 function storeSaved(role: SignatureRole, url: string) {
   try {
@@ -115,7 +177,11 @@ export default function App() {
   const [takenNames, setTakenNames] = useState<Set<string>>(new Set());
   const [saveSettings, setSaveSettings] = useState<SaveSettings>(DEFAULT_SAVE_SETTINGS);
   // Request signatures mode: which signer new fields are for, and how many signers there are.
+  const [panel, setPanel] = useState<Panel | null>(loadOpenPanel);
   const [requesting, setRequesting] = useState(false);
+  const [pagesOpen, setPagesOpen] = useState(() => loadPanel("pages", true));
+  const [pageMenu, setPageMenu] = useState<{ x: number; y: number } | null>(null);
+  const [updateCheck, setUpdateCheck] = useState(0);
   const [signer, setSigner] = useState(0);
   const [signerCount, setSignerCount] = useState(1);
   // Where to go back to when server settings close.
@@ -673,7 +739,40 @@ export default function App() {
     setRequesting((r) => !r);
     setTool("select");
     setPicked(null);
+    setEditing(null);
     setSignerCount((n) => Math.max(n, signersUsed(doc)));
+  };
+
+  const forgetSignature = (role: SignatureRole) => {
+    try {
+      localStorage.removeItem(SIG_KEYS[role]);
+    } catch {
+      // Nothing was saved.
+    }
+    setSignatures((s) => ({ ...s, [role]: null }));
+    if (tool === role) setTool("select");
+  };
+
+  const closeDocument = () => {
+    if (history.canUndo && !window.confirm("Close this document? Changes you haven't saved will be lost.")) return;
+    history.reset(emptyDoc);
+    setDocName("document.pdf");
+    setSelected(new Set());
+    setCurrent(null);
+    setHits(null);
+    setQuery("");
+    setDigitalSigs([]);
+    sigCheck.current++;
+    setSaveSettings(DEFAULT_SAVE_SETTINGS);
+    setTool("select");
+    setPicked(null);
+    setRequesting(false);
+  };
+
+  const quit = async () => {
+    if (history.canUndo && !window.confirm("Quit PageRig? Changes you haven't saved will be lost.")) return;
+    const { exit } = await import("@tauri-apps/plugin-process");
+    await exit(0);
   };
 
   const redactMatches = async () => {
@@ -790,60 +889,277 @@ export default function App() {
 
   const hitIds = useMemo(() => new Set(hits?.map((h) => h.pageId)), [hits]);
 
-  // ---- Keyboard shortcuts -----------------------------------------------
+  // ---- Commands: menus, tool panel and keyboard --------------------------
+
+  const currentIndex = doc.pages.findIndex((p) => p.id === current);
+  const sel = selected.size;
+  const target = sel || (current ? 1 : 0);
+  const modal = dialog !== null || sigDialog !== null;
+
+  useEffect(() => storeOpenPanel(panel), [panel]);
+  useEffect(() => storePanel("pages", pagesOpen), [pagesOpen]);
+
+  const commandState: CommandState = {
+    enabled(id) {
+      if (!hasDoc && !WITHOUT_DOC.has(id)) return false;
+      switch (id) {
+        case "quit":
+          return isDesktop;
+        case "undo":
+          return history.canUndo;
+        case "redo":
+          return history.canRedo;
+        case "delete-pages":
+        case "rotate-left":
+        case "rotate-right":
+        case "crop":
+        case "ocr":
+          return target > 0;
+        case "extract":
+          return sel > 0;
+        case "split":
+          return doc.pages.length > 1;
+        case "prev-page":
+          return currentIndex > 0;
+        case "next-page":
+          return currentIndex < doc.pages.length - 1;
+        case "signatures":
+          return digitalSigs.length > 0;
+        default:
+          return true;
+      }
+    },
+    checked(id) {
+      if (id === "toggle-tools") return panel === "all";
+      if (id === "toggle-pages") return pagesOpen;
+      if (id === "request") return requesting;
+      return false;
+    },
+  };
+
+  const goToPage = (n: number) => {
+    if (n >= 1 && n <= doc.pages.length) scrollToPage(doc.pages[n - 1].id);
+  };
+
+  /** A text box has the keyboard, so editing commands apply to its text instead. */
+  const typing = () => (document.activeElement as HTMLElement | null)?.matches?.("input, textarea, select, [contenteditable=true]") ?? false;
+
+  const run = (id: CommandId) => {
+    const pick = TOOL_COMMANDS[id];
+    if (pick) {
+      // Fields for other signers and your own marks are placed in different modes.
+      if (requesting) setRequesting(false);
+      chooseTool(pick);
+      return;
+    }
+    switch (id) {
+      case "open":
+        pickFiles().then((f) => openFiles(f, "open"));
+        break;
+      case "open-web":
+      case "insert-web":
+        setDialog("web");
+        break;
+      case "merge":
+        pickFiles().then((f) => openFiles(f, "append"));
+        break;
+      case "insert-file":
+        pickFiles().then((f) => openFiles(f, "insert"));
+        break;
+      case "save":
+        save();
+        break;
+      case "protect":
+        setDialog("protect");
+        break;
+      case "export":
+        setDialog("export");
+        break;
+      case "print":
+        setDialog("print");
+        break;
+      case "close":
+        closeDocument();
+        break;
+      case "quit":
+        quit();
+        break;
+      case "undo":
+        if (typing()) document.execCommand("undo");
+        else history.undo();
+        break;
+      case "redo":
+        if (typing()) document.execCommand("redo");
+        else history.redo();
+        break;
+      case "select-all-pages":
+        if (typing()) document.execCommand("selectAll");
+        else setSelected(new Set(doc.pages.map((p) => p.id)));
+        break;
+      case "delete-pages":
+        remove();
+        break;
+      case "find":
+        searchRef.current?.focus();
+        searchRef.current?.select();
+        break;
+      case "toggle-tools":
+        setPanel((p) => (p === "all" ? null : "all"));
+        break;
+      case "toggle-pages":
+        setPagesOpen((v) => !v);
+        break;
+      case "zoom-in":
+        stepZoom(1);
+        break;
+      case "zoom-out":
+        stepZoom(-1);
+        break;
+      case "fit-width":
+        setFit(true);
+        break;
+      case "actual-size":
+        setFit(false);
+        setZoom(1);
+        break;
+      case "prev-page":
+        goToPage(currentIndex);
+        break;
+      case "next-page":
+        goToPage(currentIndex + 2);
+        break;
+      case "organize":
+        setPanel("pages");
+        setPagesOpen(true);
+        break;
+      case "rotate-left":
+        rotate(-90);
+        break;
+      case "rotate-right":
+        rotate(90);
+        break;
+      case "crop":
+        setDialog("crop");
+        break;
+      case "insert-blank":
+        addBlank();
+        break;
+      case "extract":
+        extract();
+        break;
+      case "split":
+        setDialog("split");
+        break;
+      case "select-tool":
+        setTool("select");
+        setPicked(null);
+        break;
+      case "ocr":
+        runOcr();
+        break;
+      case "redact-matches":
+        if (hits?.length) redactMatches();
+        else {
+          searchRef.current?.focus();
+          flash("Search for the words to redact, then choose Redact search matches again.");
+        }
+        break;
+      case "certify":
+        setDialog("certify");
+        break;
+      case "signatures":
+        setDialog("signatures");
+        break;
+      case "request":
+        toggleRequesting();
+        break;
+      case "sent-requests":
+        setDialog("requests");
+        break;
+      case "server-settings":
+        openSettings();
+        break;
+      case "shortcuts":
+        setDialog("shortcuts");
+        break;
+      case "about":
+        setDialog("about");
+        break;
+      case "check-updates":
+        setDialog(null);
+        setUpdateCheck((n) => n + 1);
+        break;
+    }
+  };
+
+  // On the desktop a shortcut can reach the app twice, once as a key press and
+  // once from the native menu, so the second within a moment is dropped.
+  const lastRun = useRef<{ id: CommandId; from: string; at: number } | null>(null);
+  const runCommand = (id: CommandId, from: "key" | "menu" | "click" = "click") => {
+    const now = performance.now();
+    const last = lastRun.current;
+    if (from !== "click" && last && last.id === id && last.from !== from && last.from !== "click" && now - last.at < 400) return;
+    lastRun.current = { id, from, at: now };
+    if (from !== "click" && (modal || !commandState.enabled(id))) return;
+    run(id);
+  };
+
+  // The latest command handler, for the native menu, which is built once.
+  const runRef = useRef(runCommand);
+  runRef.current = runCommand;
+  const nativeMenu = useRef<NativeMenu | null>(null);
+  const syncMenu = useRef(() => {});
+  syncMenu.current = () =>
+    nativeMenu.current?.sync({
+      enabled: (id) => !modal && commandState.enabled(id),
+      checked: commandState.checked,
+    });
+  useEffect(() => {
+    if (!isDesktop) return;
+    installNativeMenu((id) => runRef.current(id, "menu"))
+      .then((m) => {
+        nativeMenu.current = m;
+        syncMenu.current();
+      })
+      .catch((err) => console.warn("Couldn't set up the menu bar:", err));
+  }, []);
+  // Keep the native menu's greyed-out items and ticks in step with the app.
+  useEffect(() => syncMenu.current());
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const mod = e.metaKey || e.ctrlKey;
       const inField = (e.target as HTMLElement)?.matches?.("input, textarea, select");
-      if (mod && e.key.toLowerCase() === "p") {
-        // Never print the app's screen; print the document instead.
+      const id = commandForKey(e);
+      if (id) {
+        // Never let the browser print the app's screen, open its own file picker or find bar.
+        if (COMMANDS[id].inFields || id === "shortcuts") e.preventDefault();
+        else if (inField) return;
         e.preventDefault();
-        if (hasDoc && !dialog) setDialog("print");
-      } else if (mod && e.key.toLowerCase() === "o") {
-        e.preventDefault();
-        pickFiles().then((f) => openFiles(f, "open"));
-      } else if (mod && e.key.toLowerCase() === "s" && hasDoc) {
-        e.preventDefault();
-        save();
-      } else if (mod && e.key.toLowerCase() === "f" && hasDoc) {
-        e.preventDefault();
-        searchRef.current?.focus();
-        searchRef.current?.select();
-      } else if (inField || dialog) {
+        runCommand(id, "key");
         return;
-      } else if (mod && e.key.toLowerCase() === "z") {
-        e.preventDefault();
-        if (e.shiftKey) history.redo();
-        else history.undo();
-      } else if (mod && e.key.toLowerCase() === "y") {
-        e.preventDefault();
-        history.redo();
-      } else if (mod && e.key.toLowerCase() === "a" && hasDoc) {
-        e.preventDefault();
-        setSelected(new Set(doc.pages.map((p) => p.id)));
-      } else if ((e.key === "Delete" || e.key === "Backspace") && picked) {
+      }
+      if (inField || modal) return;
+      if ((e.key === "Delete" || e.key === "Backspace") && picked) {
         e.preventDefault();
         deletePicked();
       } else if ((e.key === "Delete" || e.key === "Backspace") && selected.size > 0) {
         e.preventDefault();
         remove();
       } else if (e.key === "Escape") {
-        if (tool !== "select" || picked) {
+        if (pageMenu) setPageMenu(null);
+        else if (tool !== "select" || picked) {
           setTool("select");
           setPicked(null);
         } else setSelected(new Set());
-      } else if (mod && (e.key === "=" || e.key === "+")) {
-        e.preventDefault();
-        stepZoom(1);
-      } else if (mod && e.key === "-") {
-        e.preventDefault();
-        stepZoom(-1);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
+
+  const closePageMenu = useCallback(() => setPageMenu(null), []);
+
+  const activeQuick = (Object.entries(TOOL_COMMANDS).find(([, t]) => t === tool)?.[0] as CommandId | undefined) ?? (tool === "select" ? "select-tool" : null);
 
   // ---- Drag and drop files ----------------------------------------------
 
@@ -858,10 +1174,6 @@ export default function App() {
 
   // ---- Render ------------------------------------------------------------
 
-  const currentIndex = doc.pages.findIndex((p) => p.id === current);
-  const sel = selected.size;
-  const target = sel || (current ? 1 : 0);
-
   return (
     <div
       className={`app${dragOver ? " drag-over" : ""}`}
@@ -874,85 +1186,52 @@ export default function App() {
       onDragLeave={(e) => e.currentTarget === e.target && setDragOver(false)}
       onDrop={onDrop}
     >
-      <header className="toolbar">
+      <header className="appbar">
         <div className="brand">
           <img src="/favicon.svg" alt="" width={20} height={20} />
           PageRig
         </div>
-        <button onClick={() => pickFiles().then((f) => openFiles(f, "open"))} title="Open (Ctrl+O)">
-          Open
-        </button>
-        <button disabled={!hasDoc} onClick={() => pickFiles().then((f) => openFiles(f, "append"))} title="Merge other PDFs onto the end">
-          Merge files
-        </button>
-        <button className="primary" disabled={!hasDoc} onClick={save} title="Save (Ctrl+S)">
-          Save
-        </button>
-        <button
-          disabled={!hasDoc}
-          className={isProtectedSave(saveSettings) ? "on" : ""}
-          onClick={() => setDialog("protect")}
-          title="Passwords, permissions and removing hidden information when saving"
-        >
-          {isProtectedSave(saveSettings) ? "Protected 🔒" : "Protect…"}
-        </button>
-        <button disabled={!hasDoc} onClick={() => setDialog("export")} title="Save as images, Word or PowerPoint">
-          Export…
-        </button>
-        <button disabled={!hasDoc} onClick={() => setDialog("print")} title="Print (Ctrl+P)">
-          Print…
-        </button>
-        <span className="sep" />
-        <button disabled={!hasDoc} className={requesting ? "on" : ""} onClick={toggleRequesting} title="Place fields for other people to sign, then send it to them">
-          Request signatures
-        </button>
-        <span className="sep" />
-        <button disabled={!history.canUndo} onClick={history.undo} title="Undo (Ctrl+Z)" aria-label="Undo">
-          ↶
-        </button>
-        <button disabled={!history.canRedo} onClick={history.redo} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">
-          ↷
-        </button>
-        <span className="sep" />
-        <button disabled={!hasDoc} onClick={() => stepZoom(-1)} aria-label="Zoom out" title="Zoom out">
-          −
-        </button>
-        <span className="zoom-label">{Math.round(zoom * 100)}%</span>
-        <button disabled={!hasDoc} onClick={() => stepZoom(1)} aria-label="Zoom in" title="Zoom in">
-          +
-        </button>
-        <button disabled={!hasDoc} className={fit ? "active" : ""} onClick={() => setFit(true)}>
-          Fit width
-        </button>
-        <span className="spacer" />
+        {!isDesktop && <MenuBar menus={MENUS.map((m) => ({ ...m, items: m.items.filter((i) => i !== "quit") }))} state={commandState} onCommand={(id: CommandId) => runCommand(id)} />}
         {hasDoc && (
-          <span className="page-nav">
-            Page{" "}
-            <input
-              aria-label="Current page"
-              value={currentIndex + 1}
-              onChange={(e) => {
-                const n = Number(e.target.value);
-                if (n >= 1 && n <= doc.pages.length) scrollToPage(doc.pages[n - 1].id);
-              }}
-              type="number"
-              min={1}
-              max={doc.pages.length}
-            />{" "}
-            of {doc.pages.length}
+          <span className="doc-name" title={docName}>
+            {docName}
           </span>
         )}
+        <span className="spacer" />
         <input
           ref={searchRef}
           className="search"
           type="search"
-          placeholder="Search text (Ctrl+F)"
+          placeholder="Find text"
+          aria-label="Find text"
           value={query}
           disabled={!hasDoc}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && hits?.[0] && scrollToPage(hits[0].pageId)}
         />
+        <button className="icon-button" disabled={!history.canUndo} onClick={history.undo} title="Undo (Ctrl+Z)" aria-label="Undo">
+          <Icon name="undo" />
+        </button>
+        <button className="icon-button" disabled={!history.canRedo} onClick={history.redo} title="Redo (Ctrl+Shift+Z)" aria-label="Redo">
+          <Icon name="redo" />
+        </button>
+        <button className="icon-button" disabled={!hasDoc} onClick={() => setDialog("print")} title="Print (Ctrl+P)" aria-label="Print">
+          <Icon name="print" />
+        </button>
+        <button
+          disabled={!hasDoc}
+          className={`icon-button${isProtectedSave(saveSettings) ? " on" : ""}`}
+          onClick={() => setDialog("protect")}
+          title={isProtectedSave(saveSettings) ? "Protection is on: passwords, permissions or clean-up apply when saving" : "Passwords, permissions and removing hidden information when saving"}
+          aria-label="Protect"
+        >
+          <Icon name="protect" />
+        </button>
+        <button className="primary" disabled={!hasDoc} onClick={save} title="Save (Ctrl+S)">
+          Save
+        </button>
       </header>
+      {hasDoc && <Tabs panel={panel} onPanel={setPanel} />}
       {hasDoc && requesting && (
         <RequestBar
           tool={tool}
@@ -973,21 +1252,6 @@ export default function App() {
           onSend={() => setDialog("send")}
           onRequests={() => setDialog("requests")}
           canSend={signersUsed(doc) > 0}
-        />
-      )}
-      {hasDoc && !requesting && (
-        <ToolBar
-          tool={tool}
-          onTool={chooseTool}
-          stamp={stamp}
-          onStamp={setStamp}
-          hasSignature={{ signature: !!signatures.signature, initials: !!signatures.initials }}
-          onRedoSignature={setSigDialog}
-          selected={pickedObject}
-          onChange={changePicked}
-          onDelete={deletePicked}
-          onOcr={runOcr}
-          onCertify={() => setDialog("certify")}
         />
       )}
 
@@ -1014,63 +1278,73 @@ export default function App() {
         </main>
       ) : (
         <div className="workspace">
-          <aside className="sidebar">
-            <div className="page-actions" role="toolbar" aria-label="Page actions">
-              <div className="selection-label">
-                {sel ? `${sel} selected` : current ? `Page ${currentIndex + 1}` : ""}
-                {sel > 0 && (
-                  <button className="link" onClick={() => setSelected(new Set())}>
-                    Clear
-                  </button>
-                )}
-              </div>
-              <button disabled={!target} onClick={() => rotate(-90)} title="Rotate left">⟲ Left</button>
-              <button disabled={!target} onClick={() => rotate(90)} title="Rotate right">⟳ Right</button>
-              <button disabled={!target} onClick={() => setDialog("crop")}>Crop</button>
-              <button disabled={!target} onClick={remove} title="Delete (Del)">Delete</button>
-              <button onClick={addBlank} title="Insert a blank page after the selection">+ Blank</button>
-              <button onClick={() => pickFiles().then((f) => openFiles(f, "insert"))} title="Insert pages from another PDF after the selection">
-                + From file
-              </button>
-              <button className="wide" onClick={() => setDialog("web")} title="Insert a web page, saved as PDF, after the selection">
-                + Web page
-              </button>
-              <button disabled={!sel} onClick={extract} title="Save the selected pages as a new PDF">Extract</button>
-              <button disabled={doc.pages.length < 2} onClick={() => setDialog("split")}>Split…</button>
-            </div>
-            <Thumbnails
-              doc={doc}
-              selected={selected}
-              current={current}
-              onSelect={selectPage}
-              onOpen={scrollToPage}
-              onMove={(ids, to) => history.set((d) => movePages(d, ids, to))}
+          {panel && (
+            <SidePanel
+              panel={panel}
+              onClose={() => setPanel(null)}
+              state={commandState}
+              onCommand={(id: CommandId) => runCommand(id)}
+              tool={tool}
+              onTool={(t) => {
+                if (requesting) setRequesting(false);
+                chooseTool(t);
+              }}
+              stamp={stamp}
+              onStamp={setStamp}
+              signatures={signatures}
+              onRedoSignature={setSigDialog}
+              onForgetSignature={forgetSignature}
+              selectedCount={selected.size}
+              onExport={exportAs}
             />
-            <p className="hint">Drag to reorder. Shift or Ctrl-click to select several.</p>
-          </aside>
+          )}
+          {!requesting && <QuickTools active={activeQuick} state={commandState} onCommand={(id: CommandId) => runCommand(id)} />}
 
-          <main className="viewer" ref={viewerRef} onScroll={onViewerScroll}>
-            {digitalSigs.length > 0 && <SignatureBanner sigs={digitalSigs} edited={!untouchedSource(doc)} onDetails={() => setDialog("signatures")} />}
-            {doc.pages.map((page, i) => {
-              const w = Math.round(displaySize(page).width * zoom * PX_PER_PT);
-              return (
-                <div
-                  key={page.id}
-                  ref={(el) => {
-                    if (el) pageEls.current.set(page.id, el);
-                    else pageEls.current.delete(page.id);
-                  }}
-                  className={`page${hitIds.has(page.id) ? " hit" : ""}${selected.has(page.id) ? " selected" : ""}`}
-                  data-testid="page"
-                >
-                  <PageCanvas doc={doc} page={page} width={w}>
-                    <PageOverlay doc={doc} page={page} scale={w / displaySize(page).width} handlers={overlayHandlers} />
-                  </PageCanvas>
-                  <div className="page-number">{i + 1}</div>
-                </div>
-              );
-            })}
-          </main>
+          <div className="viewer-area">
+            {!requesting && (
+              <ContextBar
+                tool={tool}
+                onTool={chooseTool}
+                stamp={stamp}
+                onStamp={setStamp}
+                hasSignature={{ signature: !!signatures.signature, initials: !!signatures.initials }}
+                onRedoSignature={setSigDialog}
+                selected={pickedObject}
+                onChange={changePicked}
+                onDelete={deletePicked}
+              />
+            )}
+            <main className="viewer" ref={viewerRef} onScroll={onViewerScroll}>
+              {digitalSigs.length > 0 && <SignatureBanner sigs={digitalSigs} edited={!untouchedSource(doc)} onDetails={() => setDialog("signatures")} />}
+              {doc.pages.map((page, i) => {
+                const w = Math.round(displaySize(page).width * zoom * PX_PER_PT);
+                return (
+                  <div
+                    key={page.id}
+                    ref={(el) => {
+                      if (el) pageEls.current.set(page.id, el);
+                      else pageEls.current.delete(page.id);
+                    }}
+                    className={`page${hitIds.has(page.id) ? " hit" : ""}${selected.has(page.id) ? " selected" : ""}`}
+                    data-testid="page"
+                    onContextMenu={(e) => {
+                      // Text boxes keep their own menu for copy and paste.
+                      if (tool !== "select" || (e.target as HTMLElement).closest("input, textarea, [contenteditable=true]")) return;
+                      e.preventDefault();
+                      setCurrent(page.id);
+                      if (!selected.has(page.id)) setSelected(new Set());
+                      setPageMenu({ x: e.clientX, y: e.clientY });
+                    }}
+                  >
+                    <PageCanvas doc={doc} page={page} width={w}>
+                      <PageOverlay doc={doc} page={page} scale={w / displaySize(page).width} handlers={overlayHandlers} />
+                    </PageCanvas>
+                    <div className="page-number">{i + 1}</div>
+                  </div>
+                );
+              })}
+            </main>
+          </div>
 
           {hits !== null && (
             <aside className="results" aria-label="Search results">
@@ -1101,7 +1375,57 @@ export default function App() {
               </ul>
             </aside>
           )}
+
+          {pagesOpen && (
+            <aside className="sidebar" aria-label="Page thumbnails">
+              <div className="panel-head">
+                <h2>Pages</h2>
+                <button className="icon-button" onClick={() => setPagesOpen(false)} aria-label="Close page thumbnails" title="Close">
+                  <Icon name="close" size={16} />
+                </button>
+              </div>
+              <Thumbnails
+                doc={doc}
+                selected={selected}
+                current={current}
+                onSelect={selectPage}
+                onOpen={scrollToPage}
+                onMove={(ids, to) => history.set((d) => movePages(d, ids, to))}
+                onMenu={(id, e) => {
+                  e.preventDefault();
+                  if (!selected.has(id)) {
+                    setSelected(new Set([id]));
+                    setAnchor(id);
+                  }
+                  setPageMenu({ x: e.clientX, y: e.clientY });
+                }}
+              />
+              <p className="hint">Drag to reorder. Shift or Ctrl-click to select several. Right-click for more.</p>
+            </aside>
+          )}
+
+          <NavRail
+            state={commandState}
+            onCommand={(id: CommandId) => runCommand(id)}
+            pagesOpen={pagesOpen}
+            searchOpen={hits !== null}
+            hasSignatures={digitalSigs.length > 0}
+            pageNumber={currentIndex + 1}
+            pageCount={doc.pages.length}
+            onPage={goToPage}
+            zoom={zoom}
+          />
         </div>
+      )}
+      {pageMenu && (
+        <ContextMenu
+          x={pageMenu.x}
+          y={pageMenu.y}
+          items={["rotate-left", "rotate-right", "crop", "-", "insert-blank", "insert-file", "-", "extract", "split", "-", "ocr", "print", "-", "delete-pages"]}
+          state={commandState}
+          onCommand={(id: CommandId) => runCommand(id)}
+          onClose={closePageMenu}
+        />
       )}
 
       {dialog === "crop" && (
@@ -1163,6 +1487,8 @@ export default function App() {
         />
       )}
       {dialog === "signatures" && <SignaturesDialog sigs={digitalSigs} onClose={() => setDialog(null)} />}
+      {dialog === "shortcuts" && <ShortcutsDialog onClose={() => setDialog(null)} />}
+      {dialog === "about" && <AboutDialog onClose={() => setDialog(null)} onCheckUpdates={() => runCommand("check-updates")} />}
       {dialog === "web" && <WebPageDialog insert={hasDoc} onCapture={openWebPage} onSettings={openSettings} onClose={() => setDialog(null)} />}
       {dialog === "print" && (
         <PrintDialog
@@ -1199,7 +1525,7 @@ export default function App() {
           {message.text}
         </div>
       )}
-      <UpdateNotice hasDoc={hasDoc} />
+      <UpdateNotice hasDoc={hasDoc} checkRequest={updateCheck} onChecked={(found) => !found && flash("No newer version found. You're on PageRig " + __APP_VERSION__ + ".")} />
       {dragOver && <div className="drop-overlay">Drop files to {hasDoc ? "merge them in" : "open"}</div>}
     </div>
   );

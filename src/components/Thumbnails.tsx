@@ -25,9 +25,11 @@ interface Props {
   onOpen: (id: string) => void;
   /** Move the dragged pages so they land before the page at `to`. */
   onMove: (ids: Set<string>, to: number) => void;
+  /** Right-click on a page. */
+  onMenu?: (id: string, e: MouseEvent) => void;
 }
 
-export function Thumbnails({ doc, selected, current, onSelect, onOpen, onMove }: Props) {
+export function Thumbnails({ doc, selected, current, onSelect, onOpen, onMove, onMenu }: Props) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -57,6 +59,7 @@ export function Thumbnails({ doc, selected, current, onSelect, onOpen, onMove }:
               isCurrent={current === page.id}
               onSelect={onSelect}
               onOpen={onOpen}
+              onMenu={onMenu}
             />
           ))}
         </ol>
@@ -73,9 +76,10 @@ interface ThumbProps {
   isCurrent: boolean;
   onSelect: (id: string, e: MouseEvent) => void;
   onOpen: (id: string) => void;
+  onMenu?: (id: string, e: MouseEvent) => void;
 }
 
-function Thumb({ doc, page, index, isSelected, isCurrent, onSelect, onOpen }: ThumbProps) {
+function Thumb({ doc, page, index, isSelected, isCurrent, onSelect, onOpen, onMenu }: ThumbProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: page.id });
   return (
     <li
@@ -87,6 +91,7 @@ function Thumb({ doc, page, index, isSelected, isCurrent, onSelect, onOpen }: Th
         onSelect(page.id, e);
         if (!e.shiftKey && !e.metaKey && !e.ctrlKey) onOpen(page.id);
       }}
+      onContextMenu={onMenu && ((e) => onMenu(page.id, e))}
       {...attributes}
       {...listeners}
       aria-label={`Page ${index + 1}`}
