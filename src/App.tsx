@@ -21,6 +21,8 @@ import { fileKind, imageToPdf, pdfToImages } from "./lib/convert";
 import { convertOffice } from "./lib/office";
 import { ExportDialog, type ExportChoice } from "./components/ExportDialog";
 import { WebPageDialog } from "./components/WebPageDialog";
+import { PrintDialog, type PrintChoice } from "./components/PrintDialog";
+import { loadPrintSettings, printPdf, storePrintSettings } from "./lib/print";
 import { captureWebPage } from "./lib/capture";
 import { pdfToSheets, xlsx } from "./lib/sheet";
 import { displaySize, findText, inspectPdf, pageFrame, registerSource, searchDoc, sourceFieldNames, type SearchHit } from "./lib/render";
@@ -60,7 +62,7 @@ import { DEFAULT_SAVE_SETTINGS, isProtectedSave, ProtectDialog, type SaveSetting
 const PX_PER_PT = 96 / 72;
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4];
 
-type Dialog = null | "crop" | "split" | "protect" | "export" | "send" | "requests" | "server" | "web" | "certify" | "signatures";
+type Dialog = null | "crop" | "split" | "protect" | "export" | "print" | "send" | "requests" | "server" | "web" | "certify" | "signatures";
 
 const SIG_KEYS: Record<SignatureRole, string> = { signature: "pagerig.signature", initials: "pagerig.initials" };
 
@@ -593,6 +595,22 @@ export default function App() {
     }
   };
 
+  const print = async ({ settings, pages }: PrintChoice) => {
+    setDialog(null);
+    storePrintSettings(settings);
+    setBusy("Preparing to print…");
+    try {
+      await ensurePrintable(doc);
+      // What's printed is what would be saved: placed objects, form values and redactions included.
+      const pdf = await exportPdf(doc, pages.map((i) => doc.pages[i]), { sanitize: saveSettings.sanitize });
+      await printPdf(pdf, settings, (done, total) => setBusy(`Preparing page ${done} of ${total}…`));
+    } catch (err) {
+      flash((err as Error).message, "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   /** The document as signers will see it: redactions and clean-up applied, no password. */
   const requestPdf = async () => {
     await ensureExportable(doc);
@@ -777,7 +795,11 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
       const inField = (e.target as HTMLElement)?.matches?.("input, textarea, select");
-      if (mod && e.key.toLowerCase() === "o") {
+      if (mod && e.key.toLowerCase() === "p") {
+        // Never print the app's screen; print the document instead.
+        e.preventDefault();
+        if (hasDoc && !dialog) setDialog("print");
+      } else if (mod && e.key.toLowerCase() === "o") {
         e.preventDefault();
         pickFiles().then((f) => openFiles(f, "open"));
       } else if (mod && e.key.toLowerCase() === "s" && hasDoc) {
@@ -875,6 +897,9 @@ export default function App() {
         </button>
         <button disabled={!hasDoc} onClick={() => setDialog("export")} title="Save as images, Word or PowerPoint">
           Export…
+        </button>
+        <button disabled={!hasDoc} onClick={() => setDialog("print")} title="Print (Ctrl+P)">
+          Print…
         </button>
         <span className="sep" />
         <button disabled={!hasDoc} className={requesting ? "on" : ""} onClick={toggleRequesting} title="Place fields for other people to sign, then send it to them">
@@ -1138,6 +1163,17 @@ export default function App() {
       )}
       {dialog === "signatures" && <SignaturesDialog sigs={digitalSigs} onClose={() => setDialog(null)} />}
       {dialog === "web" && <WebPageDialog insert={hasDoc} onCapture={openWebPage} onSettings={openSettings} onClose={() => setDialog(null)} />}
+      {dialog === "print" && (
+        <PrintDialog
+          initial={loadPrintSettings()}
+          pageCount={doc.pages.length}
+          selected={doc.pages.flatMap((p, i) => (selected.has(p.id) ? [i] : []))}
+          currentIndex={currentIndex}
+          sizes={doc.pages.map(displaySize)}
+          onPrint={print}
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog === "export" && <ExportDialog selectedCount={selected.size} onExport={exportAs} onClose={() => setDialog(null)} />}
       {dialog === "split" && (
         <SplitDialog pageCount={doc.pages.length} onSplit={split} onClose={() => setDialog(null)} />
@@ -1214,6 +1250,16 @@ async function ensureExportable(doc: DocState) {
     source.restricted = undefined;
     source.locked = undefined;
   }
+}
+
+/**
+ * Printing doesn't change the file, so only a file whose owner forbade
+ * printing needs the permissions password first.
+ */
+async function ensurePrintable(doc: DocState) {
+  const unsupported = Object.values(doc.sources).find((s) => s.encrypted);
+  if (unsupported) throw new Error(`${unsupported.name} uses a kind of encryption PageRig can view but not print.`);
+  if (Object.values(doc.sources).some((s) => s.restricted && !s.restricted.print)) await ensureExportable(doc);
 }
 
 function stem(name: string) {
