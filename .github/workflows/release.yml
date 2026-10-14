@@ -94,7 +94,10 @@ jobs:
             let key = process.env.PUBKEY.trim().replace(/^["'\'']+|["'\'']+$/g, "").trim();
             if (key.includes("minisign public key")) key = Buffer.from(key.replace(/\r/g, "") + (key.endsWith("\n") ? "" : "\n")).toString("base64");
             if (!Buffer.from(key, "base64").toString().includes("minisign public key")) {
-              console.log("::error::TAURI_UPDATER_PUBKEY is not a Tauri public key. Paste the whole contents of the .key.pub file made with the private key, with nothing around it.");
+              const bad = key.search(/[^A-Za-z0-9+\/=\s]/);
+              const hint = isKey(key, "secret key") ? "It holds the private key; use the .key.pub file."
+                : `It is ${key.length} characters long` + (bad >= 0 ? ` and character ${bad + 1} is not allowed in a key.` : ".");
+              console.log(`::error::TAURI_UPDATER_PUBKEY is not a Tauri public key. ${hint} Paste the whole contents of the .key.pub file, which start with dW50cnVzdGVk.`);
               process.exit(1);
             }
             const conf = { bundle: { createUpdaterArtifacts: true }, plugins: { updater: { pubkey: key } } };
