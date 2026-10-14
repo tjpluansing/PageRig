@@ -4,10 +4,14 @@ import { CHECK_EVERY_MS, checkForUpdate, installUpdate, type Available } from ".
 interface Props {
   /** A document is open, so restarting would lose unsaved changes. */
   hasDoc: boolean;
+  /** Goes up by one each time someone asks to check now (Help, Check for updates). */
+  checkRequest: number;
+  /** Called after a check someone asked for, so they hear when there's nothing new. */
+  onChecked: (found: boolean) => void;
 }
 
 /** Checks for a newer version in the background and offers to install it. */
-export function UpdateNotice({ hasDoc }: Props) {
+export function UpdateNotice({ hasDoc, checkRequest, onChecked }: Props) {
   const [available, setAvailable] = useState<Available | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const [installing, setInstalling] = useState(false);
@@ -30,6 +34,23 @@ export function UpdateNotice({ hasDoc }: Props) {
       clearInterval(again);
     };
   }, []);
+
+  useEffect(() => {
+    if (checkRequest === 0) return;
+    let live = true;
+    checkForUpdate().then((found) => {
+      if (!live) return;
+      if (found) {
+        setAvailable(found);
+        setDismissed(false);
+      }
+      onChecked(!!found);
+    });
+    return () => {
+      live = false;
+    };
+    // onChecked changes every render; only a new request should check again.
+  }, [checkRequest]);
 
   if (!available || dismissed) return null;
 

@@ -37,6 +37,8 @@ export const STAMPS: Stamp[] = [
 const COLORS = ["#000000", "#1d4ed8", "#b91c1c", "#15803d"];
 
 interface Props {
+  /** Editing what's in the file, or filling in and signing it. */
+  section: "edit" | "fill";
   tool: Tool;
   onTool: (tool: Tool) => void;
   stamp: Stamp;
@@ -71,6 +73,7 @@ const FIELD_TOOLS: { tool: Tool; label: string }[] = [
 
 /** Fill & sign and form-building tools, plus settings for the selected object. */
 export function ToolBar({
+  section,
   tool,
   onTool,
   stamp,
@@ -86,81 +89,92 @@ export function ToolBar({
   const [stampMenu, setStampMenu] = useState(false);
 
   return (
-    <div className="toolbar tools" role="toolbar" aria-label="Edit, fill and sign">
+    <div className="toolbar tools" role="toolbar" aria-label={section === "edit" ? "Edit" : "Fill and sign"}>
       <button className={tool === "select" ? "active" : ""} title="Select, move and fill in (Esc)" onClick={() => onTool("select")}>
         Select
       </button>
-      <span className="sep" />
-      <span className="group-label">Edit</span>
-      <button className={tool === "edit-text" ? "active" : ""} title="Click existing text to change it" onClick={() => onTool("edit-text")}>
-        Edit text
-      </button>
-      <button className={tool === "edit-image" ? "active" : ""} title="Replace or remove an image" onClick={() => onTool("edit-image")}>
-        Edit image
-      </button>
-      {onOcr && (
-        <button title="Recognise text on scanned pages so it can be searched and edited" onClick={onOcr}>
-          OCR
-        </button>
-      )}
-      <button className={tool === "redact" ? "active" : ""} title="Black out text or images for good" onClick={() => onTool("redact")}>
-        Redact
-      </button>
-      <span className="sep" />
-      <span className="group-label">Fill &amp; sign</span>
-      {TOOLS.map((t) => (
-        <button key={t.tool} className={tool === t.tool ? "active" : ""} title={t.title} onClick={() => onTool(t.tool)}>
-          {t.label}
-        </button>
-      ))}
-      <span className="menu-wrap">
-        <button className={tool === "stamp" ? "active" : ""} onClick={() => setStampMenu((v) => !v)} aria-haspopup="menu">
-          Stamp ▾
-        </button>
-        {stampMenu && (
-          <div className="menu" role="menu" onMouseLeave={() => setStampMenu(false)}>
-            {STAMPS.map((s) => (
-              <button
-                key={s.text}
-                role="menuitem"
-                style={{ color: s.color }}
-                onClick={() => {
-                  onStamp(s);
-                  onTool("stamp");
-                  setStampMenu(false);
-                }}
-              >
-                {s.text.toUpperCase()}
-              </button>
-            ))}
-            <button
-              role="menuitem"
-              onClick={() => {
-                const text = window.prompt("Stamp text");
-                setStampMenu(false);
-                if (text?.trim()) {
-                  onStamp({ text: text.trim(), color: "#b91c1c" });
-                  onTool("stamp");
-                }
-              }}
-            >
-              Custom…
+      {section === "edit" ? (
+        <>
+          <span className="sep" />
+          <button className={tool === "edit-text" ? "active" : ""} title="Click existing text to change it" onClick={() => onTool("edit-text")}>
+            Edit text
+          </button>
+          <button className={tool === "edit-image" ? "active" : ""} title="Replace or remove an image" onClick={() => onTool("edit-image")}>
+            Edit image
+          </button>
+          <button className={tool === "text" ? "active" : ""} title="Add new text" onClick={() => onTool("text")}>
+            Add text
+          </button>
+          <button className={tool === "image" ? "active" : ""} title="Add a picture" onClick={() => onTool("image")}>
+            Add image
+          </button>
+          {onOcr && (
+            <button title="Recognise text on scanned pages so it can be searched and edited" onClick={onOcr}>
+              OCR
             </button>
-          </div>
-        )}
-      </span>
-      {onCertify && (
-        <button title="Sign with a digital certificate (.p12 or .pfx) and save" onClick={onCertify}>
-          Certificate…
-        </button>
+          )}
+          <button className={tool === "redact" ? "active" : ""} title="Black out text or images for good" onClick={() => onTool("redact")}>
+            Redact
+          </button>
+        </>
+      ) : (
+        <>
+          <span className="sep" />
+          {TOOLS.map((t) => (
+            <button key={t.tool} className={tool === t.tool ? "active" : ""} title={t.title} onClick={() => onTool(t.tool)}>
+              {t.label}
+            </button>
+          ))}
+          <span className="menu-wrap">
+            <button className={tool === "stamp" ? "active" : ""} onClick={() => setStampMenu((v) => !v)} aria-haspopup="menu">
+              Stamp ▾
+            </button>
+            {stampMenu && (
+              <div className="menu" role="menu" onMouseLeave={() => setStampMenu(false)}>
+                {STAMPS.map((s) => (
+                  <button
+                    key={s.text}
+                    role="menuitem"
+                    style={{ color: s.color }}
+                    onClick={() => {
+                      onStamp(s);
+                      onTool("stamp");
+                      setStampMenu(false);
+                    }}
+                  >
+                    {s.text.toUpperCase()}
+                  </button>
+                ))}
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    const text = window.prompt("Stamp text");
+                    setStampMenu(false);
+                    if (text?.trim()) {
+                      onStamp({ text: text.trim(), color: "#b91c1c" });
+                      onTool("stamp");
+                    }
+                  }}
+                >
+                  Custom…
+                </button>
+              </div>
+            )}
+          </span>
+          {onCertify && (
+            <button title="Sign with a digital certificate (.p12 or .pfx) and save" onClick={onCertify}>
+              Certificate…
+            </button>
+          )}
+          <span className="sep" />
+          <span className="group-label">Form fields</span>
+          {FIELD_TOOLS.map((t) => (
+            <button key={t.tool} className={tool === t.tool ? "active" : ""} onClick={() => onTool(t.tool)}>
+              {t.label}
+            </button>
+          ))}
+        </>
       )}
-      <span className="sep" />
-      <span className="group-label">Form fields</span>
-      {FIELD_TOOLS.map((t) => (
-        <button key={t.tool} className={tool === t.tool ? "active" : ""} onClick={() => onTool(t.tool)}>
-          {t.label}
-        </button>
-      ))}
       <span className="spacer" />
       <Hint tool={tool} stamp={stamp} hasSignature={hasSignature} onRedoSignature={onRedoSignature} />
       {selected && tool === "select" && <Properties obj={selected} onChange={onChange} onDelete={onDelete} />}
@@ -194,13 +208,13 @@ function Properties({ obj, onChange, onDelete }: { obj: PageObject; onChange: (p
     <span className="props">
       {obj.kind === "text" && (
         <>
-          <button aria-label="Smaller text" onClick={() => onChange({ fontSize: Math.max(4, obj.fontSize - 1) } as Partial<TextObject>)}>
-            A−
-          </button>
-          <span className="zoom-label">{obj.fontSize}pt</span>
-          <button aria-label="Larger text" onClick={() => onChange({ fontSize: obj.fontSize + 1 } as Partial<TextObject>)}>
-            A+
-          </button>
+              <button aria-label="Smaller text" onClick={() => onChange({ fontSize: Math.max(4, obj.fontSize - 1) } as Partial<TextObject>)}>
+                A−
+              </button>
+              <span className="zoom-label">{obj.fontSize}pt</span>
+              <button aria-label="Larger text" onClick={() => onChange({ fontSize: obj.fontSize + 1 } as Partial<TextObject>)}>
+                A+
+              </button>
         </>
       )}
       {obj.kind === "rect" &&
@@ -225,21 +239,21 @@ function Properties({ obj, onChange, onDelete }: { obj: PageObject; onChange: (p
         ))}
       {obj.kind === "field" && (
         <>
-          <label>
-            Name{" "}
-            <input className="narrow-input" value={obj.name} onChange={(e) => onChange({ name: e.target.value })} />
-          </label>
-          {obj.fieldType === "dropdown" && (
-            <label>
-              Options{" "}
-              <input
-                className="options-input"
-                placeholder="Comma separated"
-                value={(obj.options ?? []).join(", ")}
-                onChange={(e) => onChange({ options: e.target.value.split(",").map((s) => s.trimStart()) })}
-              />
-            </label>
-          )}
+              <label>
+                Name{" "}
+                <input className="narrow-input" value={obj.name} onChange={(e) => onChange({ name: e.target.value })} />
+              </label>
+              {obj.fieldType === "dropdown" && (
+                <label>
+                  Options{" "}
+                  <input
+                    className="options-input"
+                    placeholder="Comma separated"
+                    value={(obj.options ?? []).join(", ")}
+                    onChange={(e) => onChange({ options: e.target.value.split(",").map((s) => s.trimStart()) })}
+                  />
+                </label>
+              )}
         </>
       )}
       <button onClick={onDelete}>Delete</button>
