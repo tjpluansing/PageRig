@@ -76,7 +76,19 @@ jobs:
             echo "KEY_END"
             echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$PASSWORD"
           } >> "$GITHUB_ENV"
-          printf '{"bundle":{"createUpdaterArtifacts":true},"plugins":{"updater":{"pubkey":"%s"}}}' "$PUBKEY" > "$RUNNER_TEMP/updater.conf.json"
+          # The public key is the one-line text in updater.key.pub. Accept it with stray
+          # quotes or spaces, or as the decoded two-line text, and write the JSON with
+          # node so nothing in it can break the file.
+          PUBKEY="$PUBKEY" node -e '
+            let key = process.env.PUBKEY.trim().replace(/^["'\'']+|["'\'']+$/g, "").trim();
+            if (key.includes("minisign public key")) key = Buffer.from(key.replace(/\r/g, "") + (key.endsWith("\n") ? "" : "\n")).toString("base64");
+            if (!Buffer.from(key, "base64").toString().includes("minisign public key")) {
+              console.log("::error::TAURI_UPDATER_PUBKEY is not a Tauri public key. Paste the whole contents of the .key.pub file made with the private key, with nothing around it.");
+              process.exit(1);
+            }
+            const conf = { bundle: { createUpdaterArtifacts: true }, plugins: { updater: { pubkey: key } } };
+            require("fs").writeFileSync(process.argv[1], JSON.stringify(conf));
+          ' "$RUNNER_TEMP/updater.conf.json"
       - name: Build installers
         shell: bash
         run: npx tauri build --verbose --config "$RUNNER_TEMP/updater.conf.json" ${{ matrix.args }}
