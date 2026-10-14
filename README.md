@@ -5,6 +5,7 @@ A PDF viewer and editor that runs in the browser and as a desktop app (Windows, 
 ## What works today
 
 - **View:** continuous scrolling, thumbnails, zoom (steps or fit to width), jump to page, and text search with a results list.
+- **Print:** prints just the document (never the app's screen), fitted to Letter, Legal, Folio, Tabloid, A3, A4 or A5 paper, with automatic or fixed orientation, fit, shrink-only or actual size, margins, and all, selected, current or a range of pages. Ctrl+P opens it.
 - **Organize pages:** drag to reorder (including several at once), rotate, crop, delete, insert blank pages, insert pages from another PDF, and merge whole files.
 - **Split and extract:** split every N pages or by custom ranges such as `1-3, 4, 5-`, or save just the selected pages as a new PDF.
 - **Fill & sign:** fill in a PDF's existing form fields; add text, today's date, check marks, crosses and dots; draw, type or upload a signature and initials (remembered on this device); place stamps like APPROVED or DRAFT; add pictures. Everything can be moved and resized.
@@ -92,6 +93,7 @@ Converting PDF to Word or PowerPoint keeps text editable but places it in positi
 | `src/lib/document.ts` | The editable document: a list of page references (source, rotation, crop). All edits are pure functions. |
 | `src/lib/objects.ts` | Text, marks, images and form fields placed on pages, and the page/screen coordinate maths. |
 | `src/lib/export.ts` | Builds real PDFs from that list with pdf-lib, drawing placed objects and filling forms. |
+| `src/lib/print.ts` | Laying pages out on the chosen paper and handing only those sheets to the print dialog. |
 | `src/lib/render.ts` | Rendering, text search and finding editable text and images with pdf.js. |
 | `src/lib/ocr.ts` | Text recognition for scanned pages with Tesseract. |
 | `src/lib/security.ts`, `crypto.ts` | Encrypting and decrypting PDFs (RC4, AES-128, AES-256). |

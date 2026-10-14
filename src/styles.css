@@ -565,3 +565,27 @@ button.sign-field { cursor: pointer; }
   .sig-banner.ok { background: #13301f; color: #bbf7d0; border-color: #1f5133; }
   .sig-banner.bad { background: #3a1616; color: #fecaca; border-color: #6b2525; }
 }
+
+/* ---- Printing ----------------------------------------------------------- */
+
+.modal:has(.print-body) { width: 560px; }
+.print-body { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+.print-options { flex: 1; min-width: 260px; }
+.print-options .field-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
+.print-options .field-row select { min-width: 190px; }
+.print-options .check-row .narrow-input { margin-left: 4px; }
+.print-preview { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 160px; margin-top: 10px; }
+.print-preview-sheet { display: grid; place-items: center; background: #fff; border: 1px solid var(--muted); box-shadow: 0 1px 4px rgb(0 0 0 / 0.2); overflow: hidden; }
+.print-preview-page { background: #dbe4f3; outline: 1px solid #6b85b8; }
+
+/* Only the prepared sheets ever reach the printer, never the app's screen. */
+#print-root { display: none; }
+@media print {
+  html, body { height: auto; overflow: visible; background: #fff; }
+  body > *:not(#print-root) { display: none !important; }
+  #print-root { display: block; }
+  .print-sheet { display: flex; align-items: center; justify-content: center; overflow: hidden; break-after: page; page-break-after: always; }
+  .print-sheet:last-child { break-after: auto; page-break-after: auto; }
+  .print-sheet img { display: block; flex: none; }
+  body:not(:has(#print-root))::after { content: "To print a document, open it in PageRig and use Print."; display: block; padding: 1in; font: 14pt sans-serif; }
+}
