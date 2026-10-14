@@ -28,6 +28,18 @@ Download the desktop app for Windows, macOS or Linux from [Releases](https://git
 
 To host the web version, run the server image from each release, `ghcr.io/tjpluansing/pagerig` (see [The PageRig server](#the-pagerig-server) for its settings). Releases are made by pushing a tag like `v1.0.0`, which builds everything and opens a draft release.
 
+### Updates
+
+The desktop app checks for a newer published release when it starts and every few hours, and offers to install it and restart. The Linux `.deb` doesn't update itself; the `.AppImage` does. The web version notices when the server has a newer build and offers to reload.
+
+Update files are signed. The release workflow needs these repository secrets, made once with `npx tauri signer generate -w ~/.tauri/pagerig.key`:
+
+- `TAURI_SIGNING_PRIVATE_KEY`: the contents of `~/.tauri/pagerig.key`.
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the password you chose for it.
+- `TAURI_UPDATER_PUBKEY`: the contents of `~/.tauri/pagerig.key.pub`.
+
+Keep the key and password safe: without them, installed copies can't be updated to new releases.
+
 ## Roadmap
 
 1. Foundation, viewer and page management *(done)*

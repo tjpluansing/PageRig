@@ -3,6 +3,11 @@ name: Release
 # Pushing a tag like v1.0.0 builds the desktop installers and the server's
 # Docker image, and puts them on a draft GitHub release to check and publish.
 # Pull requests that change this file run the builds without publishing.
+#
+# Installers are signed for automatic updates with the key in the
+# TAURI_SIGNING_PRIVATE_KEY secret (and TAURI_SIGNING_PRIVATE_KEY_PASSWORD);
+# TAURI_UPDATER_PUBKEY is its public half, built into the app to check updates.
+# The release carries latest.json, which installed copies read once it's published.
 
 on:
   push:
@@ -25,7 +30,8 @@ jobs:
           - os: windows-latest
             args: --bundles nsis,msi
           - os: macos-latest
-            args: --target universal-apple-darwin --bundles dmg
+            # The app bundle is what macOS updates install.
+            args: --target universal-apple-darwin --bundles app,dmg
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -45,8 +51,35 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libxdo-dev
       - run: npm ci
+      - name: Set up update signing
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+        run: |
+          if [[ -z "$KEY" || -z "$PUBKEY" ]]; then
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              echo "::error::Add the TAURI_SIGNING_PRIVATE_KEY and TAURI_UPDATER_PUBKEY secrets so installed copies can update."
+              exit 1
+            fi
+            # Pull requests sign with a throwaway key to check the update files get made.
+            npx tauri signer generate --ci -w "$RUNNER_TEMP/updater.key" -p ""
+            KEY=$(cat "$RUNNER_TEMP/updater.key")
+            PASSWORD=""
+            PUBKEY=$(cat "$RUNNER_TEMP/updater.key.pub")
+          fi
+          echo "::add-mask::$KEY"
+          {
+            echo "TAURI_SIGNING_PRIVATE_KEY<<KEY_END"
+            echo "$KEY"
+            echo "KEY_END"
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$PASSWORD"
+          } >> "$GITHUB_ENV"
+          printf '{"bundle":{"createUpdaterArtifacts":true},"plugins":{"updater":{"pubkey":"%s"}}}' "$PUBKEY" > "$RUNNER_TEMP/updater.conf.json"
       - name: Build installers
-        run: npx tauri build --verbose ${{ matrix.args }}
+        shell: bash
+        run: npx tauri build --verbose --config "$RUNNER_TEMP/updater.conf.json" ${{ matrix.args }}
         env:
           # linuxdeploy's bundled strip is too old for some system libraries,
           # and it runs without FUSE when it unpacks itself instead.
@@ -57,10 +90,11 @@ jobs:
           name: installers-${{ matrix.os }}
           path: |
             src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/appimage/*.AppImage
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/appimage/*.AppImage*
+            src-tauri/target/release/bundle/nsis/*.exe*
+            src-tauri/target/release/bundle/msi/*.msi*
             src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz*
           if-no-files-found: error
 
   server:
@@ -104,18 +138,23 @@ jobs:
           docker logs pagerig
 
   release:
-    if: startsWith(github.ref, 'refs/tags/')
     needs: [desktop, server]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - uses: actions/download-artifact@v4
         with:
           path: installers
           # Only the installers; the Docker build also leaves a build-record artifact.
           pattern: installers-*
           merge-multiple: true
+      - name: Write the update manifest
+        run: node .github/update-manifest.mjs installers "${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.0.0-test' }}" "$GITHUB_REPOSITORY"
       - name: Create a draft release
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -129,6 +168,8 @@ jobs:
 
           The installers aren't code-signed yet, so Windows SmartScreen and macOS Gatekeeper ask for confirmation the first time.
           On macOS, right-click the app and choose Open.
+
+          Once this release is published, copies of PageRig that already have automatic updates offer to install it.
 
           ## Server
 
