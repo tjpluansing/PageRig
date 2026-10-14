@@ -157,6 +157,13 @@ const PATHS = {
     </>
   ),
   fit: <path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4M6 10h8M8 8l-2 2 2 2M12 8l2 2-2 2" />,
+  dot: <circle cx="10" cy="10" r="3" fill="currentColor" />,
+  calendar: (
+    <>
+      <rect x="3" y="4.5" width="14" height="12.5" rx="1" />
+      <path d="M3 8.5h14M7 3v3M13 3v3" />
+    </>
+  ),
   up: <path d="m5 12.5 5-5 5 5" />,
   down: <path d="m5 7.5 5 5 5-5" />,
   close: <path d="m5 5 10 10M15 5 5 15" />,
