@@ -37,5 +37,12 @@
     "fileAssociations": [
       { "ext": ["pdf"], "mimeType": "application/pdf", "description": "PDF document" }
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": ["https://github.com/tjpluansing/PageRig/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
   }
 }

@@ -22,6 +22,7 @@ import { convertOffice } from "./lib/office";
 import { ExportDialog, type ExportChoice } from "./components/ExportDialog";
 import { WebPageDialog } from "./components/WebPageDialog";
 import { PrintDialog, type PrintChoice } from "./components/PrintDialog";
+import { UpdateNotice } from "./components/UpdateNotice";
 import { loadPrintSettings, printPdf, storePrintSettings } from "./lib/print";
 import { captureWebPage } from "./lib/capture";
 import { pdfToSheets, xlsx } from "./lib/sheet";
@@ -1198,6 +1199,7 @@ export default function App() {
           {message.text}
         </div>
       )}
+      <UpdateNotice hasDoc={hasDoc} />
       {dragOver && <div className="drop-overlay">Drop files to {hasDoc ? "merge them in" : "open"}</div>}
     </div>
   );

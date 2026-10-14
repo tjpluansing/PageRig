@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Lets the main window open and save files the user picks, and print.",
+  "description": "Lets the main window open and save files the user picks, print, and update itself.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -10,6 +10,8 @@
     "dialog:allow-save",
     "fs:allow-read-file",
     "fs:allow-write-file",
+    "updater:default",
+    "process:allow-restart",
     {
       "identifier": "fs:scope",
       "allow": [{ "path": "**" }]

@@ -251,6 +251,24 @@ mark { background: #fde68a; color: #111; border-radius: 2px; }
 .toast { bottom: 24px; max-width: 80vw; }
 .toast.error { background: var(--danger); }
 
+.update-notice {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 10;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  max-width: min(480px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.2);
+}
+.update-notice .muted, .update-notice .error { font-size: 13px; margin-top: 2px; }
+.update-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
 .drop-overlay {
   position: fixed;
   inset: 12px;
