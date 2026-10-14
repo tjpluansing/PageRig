@@ -79,9 +79,16 @@ jobs:
           # The public key is the one-line text in updater.key.pub. Accept it with stray
           # quotes or spaces, or as the decoded two-line text, and write the JSON with
           # node so nothing in it can break the file.
-          KEY="$KEY" PUBKEY="$PUBKEY" node -e '
-            if (!/^[A-Za-z0-9+\/=\s]+$/.test(process.env.KEY) || !Buffer.from(process.env.KEY, "base64").toString().includes("secret key")) {
-              console.log("::error::TAURI_SIGNING_PRIVATE_KEY is not a Tauri private key. Paste the whole contents of the .key file (not .key.pub), with nothing around it.");
+          KEY="$KEY" PASSWORD="$PASSWORD" PUBKEY="$PUBKEY" node -e '
+            const isKey = (v, kind) => /^[A-Za-z0-9+\/=\s]+$/.test(v) && Buffer.from(v, "base64").toString().includes(kind);
+            const { KEY, PASSWORD } = process.env;
+            if (!isKey(KEY, "secret key")) {
+              // Say what is wrong without printing any of the secret.
+              const bad = KEY.search(/[^A-Za-z0-9+\/=\s]/);
+              const hint = isKey(PASSWORD, "secret key") ? "It looks swapped with TAURI_SIGNING_PRIVATE_KEY_PASSWORD, which holds the key."
+                : isKey(KEY, "public key") ? "It holds the public key; use the .key file, not .key.pub."
+                : `It is ${KEY.length} characters long` + (bad >= 0 ? ` and character ${bad + 1} is not allowed in a key.` : ".");
+              console.log(`::error::TAURI_SIGNING_PRIVATE_KEY is not a Tauri private key. ${hint} Paste the whole contents of the .key file, which start with dW50cnVzdGVk.`);
               process.exit(1);
             }
             let key = process.env.PUBKEY.trim().replace(/^["'\'']+|["'\'']+$/g, "").trim();
