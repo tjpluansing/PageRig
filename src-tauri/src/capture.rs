@@ -87,6 +87,8 @@ fn run(browser: &PathBuf, work: &PathBuf, url: &str) -> Result<Vec<u8>, String> 
     if std::env::var_os("PAGERIG_CHROMIUM_NO_SANDBOX").is_some() {
         cmd.arg("--no-sandbox");
     }
+    // Run from the work folder, so a helper that outlives us never holds the install folder open.
+    cmd.current_dir(work);
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
     hide_window(&mut cmd);
     let mut child = cmd

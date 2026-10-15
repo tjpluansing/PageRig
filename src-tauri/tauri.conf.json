@@ -36,7 +36,10 @@
     ],
     "fileAssociations": [
       { "ext": ["pdf"], "mimeType": "application/pdf", "description": "PDF document" }
-    ]
+    ],
+    "windows": {
+      "nsis": { "installerHooks": "./windows/hooks.nsh" }
+    }
   },
   "plugins": {
     "updater": {
