@@ -1,6 +1,6 @@
 [package]
 name = "pagerig"
-version = "1.1.0"
+version = "1.1.1"
 description = "PageRig PDF viewer and editor"
 edition = "2021"
 
