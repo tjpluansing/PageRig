@@ -94,6 +94,8 @@ fn run(
         .arg("--outdir")
         .arg(&output_dir)
         .arg(&input);
+    // Run from the work folder, so a helper that outlives us never holds the install folder open.
+    cmd.current_dir(work);
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
     hide_window(&mut cmd);
 
