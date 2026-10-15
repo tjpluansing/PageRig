@@ -123,7 +123,7 @@ function base64Bytes(b64: string): Uint8Array {
   return out;
 }
 
-// ---- ZIP (stored, no compression: images are already compressed) ------------
+// ---- ZIP (we write stored files: images are already compressed) ------------
 
 const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
   let c = n;
@@ -139,25 +139,70 @@ export function crc32(data: Uint8Array): number {
 
 /** Bundle files into a .zip, so the browser saves one download instead of many. */
 export function zip(files: ExportedFile[], date = new Date()): Uint8Array {
+  return writeZip(
+    files.map((f) => ({ name: f.name, method: 0, crc: crc32(f.bytes), size: f.bytes.length, data: f.bytes })),
+    date,
+  );
+}
+
+/** One file in a .zip, with its data as stored: raw (method 0) or deflated (method 8). */
+export interface ZipEntry {
+  name: string;
+  method: number;
+  crc: number;
+  /** Uncompressed size. */
+  size: number;
+  data: Uint8Array;
+}
+
+/** List the files in a .zip without decompressing them. Throws if it isn't one we can read. */
+export function readZip(bytes: Uint8Array): ZipEntry[] {
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let end = bytes.length - 22;
+  while (end >= 0 && v.getUint32(end, true) !== 0x06054b50) end--;
+  if (end < 0) throw new Error("Not a zip file.");
+  const dec = new TextDecoder();
+  const entries: ZipEntry[] = [];
+  let p = v.getUint32(end + 16, true);
+  for (let i = v.getUint16(end + 10, true); i > 0; i--) {
+    if (v.getUint32(p, true) !== 0x02014b50) throw new Error("Damaged zip file.");
+    const nameLength = v.getUint16(p + 28, true);
+    const local = v.getUint32(p + 42, true);
+    const start = local + 30 + v.getUint16(local + 26, true) + v.getUint16(local + 28, true);
+    const compressed = v.getUint32(p + 20, true);
+    if (start + compressed > bytes.length) throw new Error("Damaged zip file.");
+    entries.push({
+      name: dec.decode(bytes.subarray(p + 46, p + 46 + nameLength)),
+      method: v.getUint16(p + 10, true),
+      crc: v.getUint32(p + 16, true),
+      size: v.getUint32(p + 24, true),
+      data: bytes.subarray(start, start + compressed),
+    });
+    p += 46 + nameLength + v.getUint16(p + 30, true) + v.getUint16(p + 32, true);
+  }
+  return entries;
+}
+
+export function writeZip(entries: ZipEntry[], date = new Date()): Uint8Array {
   const enc = new TextEncoder();
   const time = (date.getHours() << 11) | (date.getMinutes() << 5) | (date.getSeconds() >> 1);
   const day = ((date.getFullYear() - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
   const locals: Uint8Array[] = [];
   const centrals: Uint8Array[] = [];
   let offset = 0;
-  for (const f of files) {
+  for (const f of entries) {
     const name = enc.encode(f.name);
-    const crc = crc32(f.bytes);
     const local = new Uint8Array(30 + name.length);
     const lv = new DataView(local.buffer);
     lv.setUint32(0, 0x04034b50, true);
     lv.setUint16(4, 20, true);
     lv.setUint16(6, 0x0800, true); // names are UTF-8
+    lv.setUint16(8, f.method, true);
     lv.setUint16(10, time, true);
     lv.setUint16(12, day, true);
-    lv.setUint32(14, crc, true);
-    lv.setUint32(18, f.bytes.length, true);
-    lv.setUint32(22, f.bytes.length, true);
+    lv.setUint32(14, f.crc, true);
+    lv.setUint32(18, f.data.length, true);
+    lv.setUint32(22, f.size, true);
     lv.setUint16(26, name.length, true);
     local.set(name, 30);
 
@@ -167,25 +212,26 @@ export function zip(files: ExportedFile[], date = new Date()): Uint8Array {
     cv.setUint16(4, 20, true);
     cv.setUint16(6, 20, true);
     cv.setUint16(8, 0x0800, true);
+    cv.setUint16(10, f.method, true);
     cv.setUint16(12, time, true);
     cv.setUint16(14, day, true);
-    cv.setUint32(16, crc, true);
-    cv.setUint32(20, f.bytes.length, true);
-    cv.setUint32(24, f.bytes.length, true);
+    cv.setUint32(16, f.crc, true);
+    cv.setUint32(20, f.data.length, true);
+    cv.setUint32(24, f.size, true);
     cv.setUint16(28, name.length, true);
     cv.setUint32(42, offset, true);
     central.set(name, 46);
 
-    locals.push(local, f.bytes);
+    locals.push(local, f.data);
     centrals.push(central);
-    offset += local.length + f.bytes.length;
+    offset += local.length + f.data.length;
   }
   const centralSize = centrals.reduce((n, c) => n + c.length, 0);
   const end = new Uint8Array(22);
   const ev = new DataView(end.buffer);
   ev.setUint32(0, 0x06054b50, true);
-  ev.setUint16(8, files.length, true);
-  ev.setUint16(10, files.length, true);
+  ev.setUint16(8, entries.length, true);
+  ev.setUint16(10, entries.length, true);
   ev.setUint32(12, centralSize, true);
   ev.setUint32(16, offset, true);
 
