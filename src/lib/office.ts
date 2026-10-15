@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isDesktop } from "./platform";
 import { loadSettings } from "./signing";
+import { fixClippedPictures } from "./slides";
 
 export type OfficeTarget = "pdf" | "docx" | "pptx";
 
@@ -22,6 +23,12 @@ export const OFFICE_UNAVAILABLE =
   "Converting Office files needs the PageRig desktop app, or a PageRig server (set its address in Settings).";
 
 export async function convertOffice(bytes: Uint8Array, name: string, to: OfficeTarget): Promise<Uint8Array> {
+  const out = await runConverter(bytes, name, to);
+  // LibreOffice drops the clipping around images when it makes slides; put it back.
+  return to === "pptx" ? fixClippedPictures(out, bytes) : out;
+}
+
+async function runConverter(bytes: Uint8Array, name: string, to: OfficeTarget): Promise<Uint8Array> {
   const filter = PDF_IMPORT[to];
   if (isDesktop) {
     const headers: Record<string, string> = { "x-name": encodeURIComponent(name), "x-to": to };
